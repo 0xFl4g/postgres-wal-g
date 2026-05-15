@@ -21,26 +21,37 @@ ARG POSTGRES_VERSION=18
 FROM postgres:${POSTGRES_VERSION}
 
 # WAL-G version. Pin in your compose/.env via the image tag so a rebuild
-# is deterministic. The `wal-g-pg-ubuntu-22.04` binary is glibc-linked and
-# runs on the Debian-based postgres image without translation.
+# is deterministic. The Ubuntu binaries are glibc-linked and run on the
+# Debian-based postgres image without translation.
+#
+# Architecture notes (verified against the v3.0.5 release manifest):
+#   - amd64  → wal-g publishes ubuntu-20.04 / 22.04 / 24.04 amd64 builds.
+#              We use 22.04 (newer libc fixes than 20.04, still broadly
+#              tested upstream — 24.04 is the newest but only amd64).
+#   - arm64  → wal-g publishes ONLY ubuntu-20.04-aarch64 for arm64. The
+#              older glibc is forward-compatible with Debian Trixie.
 ARG WAL_G_VERSION=v3.0.5
 ARG TARGETARCH
 
-# Install WAL-G binary. apt is purged after install — final image only
-# keeps the wal-g binary, ca-certificates, and the runtime libs.
 RUN set -eux; \
-    arch="${TARGETARCH:-amd64}"; \
-    case "$arch" in \
-      amd64) walg_arch=amd64 ;; \
-      arm64) walg_arch=aarch64 ;; \
-      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) \
+        walg_url="https://github.com/wal-g/wal-g/releases/download/${WAL_G_VERSION}/wal-g-pg-ubuntu-22.04-amd64.tar.gz"; \
+        walg_inner="wal-g-pg-ubuntu-22.04-amd64"; \
+        ;; \
+      arm64) \
+        walg_url="https://github.com/wal-g/wal-g/releases/download/${WAL_G_VERSION}/wal-g-pg-ubuntu-20.04-aarch64.tar.gz"; \
+        walg_inner="wal-g-pg-ubuntu-20.04-aarch64"; \
+        ;; \
+      *) \
+        echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 \
+        ;; \
     esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends curl ca-certificates; \
-    curl -fsSL "https://github.com/wal-g/wal-g/releases/download/${WAL_G_VERSION}/wal-g-pg-ubuntu-22.04-${walg_arch}.tar.gz" \
-        -o /tmp/wal-g.tar.gz; \
+    curl -fsSL "$walg_url" -o /tmp/wal-g.tar.gz; \
     tar -xzf /tmp/wal-g.tar.gz -C /tmp; \
-    mv "/tmp/wal-g-pg-ubuntu-22.04-${walg_arch}" /usr/local/bin/wal-g; \
+    mv "/tmp/${walg_inner}" /usr/local/bin/wal-g; \
     chmod +x /usr/local/bin/wal-g; \
     rm /tmp/wal-g.tar.gz; \
     apt-get purge -y --auto-remove curl; \

@@ -1,0 +1,123 @@
+name: test
+
+# Integration test: build the image locally, bring up postgres + minio,
+# run wal-g backup-push against minio, verify the round-trip works.
+# No untrusted input flows into `run:` blocks — matrix.postgres is a
+# hardcoded list and there are no github.event.* fields used.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    name: integration (pg${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['16', '17', '18']
+    env:
+      PG: ${{ matrix.postgres }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build local image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: postgres-wal-g:test
+          build-args: |
+            POSTGRES_VERSION=${{ matrix.postgres }}
+            WAL_G_VERSION=v3.0.5
+          cache-from: type=gha,scope=test-pg${{ matrix.postgres }}
+          cache-to: type=gha,mode=max,scope=test-pg${{ matrix.postgres }}
+
+      - name: Start MinIO (S3 backend under test)
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=testaccess \
+            -e MINIO_ROOT_PASSWORD=testsecret123 \
+            quay.io/minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:9000/minio/health/live && break
+            sleep 1
+          done
+
+      - name: Create bucket
+        run: |
+          docker run --rm --network host \
+            -e MC_HOST_local=http://testaccess:testsecret123@127.0.0.1:9000 \
+            quay.io/minio/mc:latest mb local/walg-test
+
+      - name: Start postgres-wal-g
+        run: |
+          docker run -d --name pg \
+            --network host \
+            -e POSTGRES_PASSWORD=test \
+            -e PGPORT=5499 \
+            -e WALG_S3_PREFIX=s3://walg-test \
+            -e AWS_ENDPOINT=http://127.0.0.1:9000 \
+            -e AWS_REGION=us-east-1 \
+            -e AWS_S3_FORCE_PATH_STYLE=true \
+            -e AWS_ACCESS_KEY_ID=testaccess \
+            -e AWS_SECRET_ACCESS_KEY=testsecret123 \
+            postgres-wal-g:test \
+            postgres \
+              -c wal_level=replica \
+              -c archive_mode=on \
+              -c archive_command='/usr/local/bin/wal-g wal-push %p' \
+              -c archive_timeout=10s
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -p 5499 && break
+            sleep 1
+          done
+
+      - name: Generate WAL activity
+        run: |
+          docker exec pg psql -U postgres -p 5499 -c "
+            CREATE TABLE t (id serial primary key, payload text);
+            INSERT INTO t (payload) SELECT 'row-' || generate_series(1, 1000);
+          "
+          docker exec pg psql -U postgres -p 5499 -c "SELECT pg_switch_wal();"
+
+      - name: Take a base backup
+        run: docker exec pg wal-g backup-push /var/lib/postgresql/data
+
+      - name: Verify backup landed in MinIO
+        run: |
+          sleep 5
+          backups=$(docker exec pg wal-g backup-list | tail -n +2 | wc -l)
+          if [ "$backups" -lt 1 ]; then
+            echo "FAIL: no backups visible in wal-g backup-list" >&2
+            docker logs pg | tail -50
+            exit 1
+          fi
+          echo "OK: $backups backup(s) in MinIO"
+
+      - name: Verify _FILE secret unwrapping
+        run: |
+          mkdir -p /tmp/secrets
+          printf '%s' "testaccess" > /tmp/secrets/access
+          printf '%s' "testsecret123" > /tmp/secrets/secret
+          docker run --rm \
+            --network host \
+            -v /tmp/secrets:/run/secrets:ro \
+            -e POSTGRES_PASSWORD=test \
+            -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access \
+            -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret \
+            --entrypoint /usr/local/bin/postgres-wal-g-entrypoint.sh \
+            postgres-wal-g:test \
+            sh -c 'test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && echo "OK: _FILE secrets unwrapped"'
+
+      - name: Dump postgres logs on failure
+        if: failure()
+        run: |
+          echo "=== postgres logs ==="
+          docker logs pg 2>&1 | tail -100 || true
+          echo "=== minio logs ==="
+          docker logs minio 2>&1 | tail -50 || true

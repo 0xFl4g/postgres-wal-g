@@ -150,9 +150,9 @@ PITR restore uses `recovery_target_time` in `postgresql.auto.conf` + a `recovery
 
 If you want HA postgres with automatic failover, use Spilo. If you want a single-instance postgres + S3 backup that fits in a `docker compose up`, use this.
 
-## Why we tried upstream first
+## Why this is third-party
 
-The first move was to ask whether WAL-G itself would ship an official combined image. Tracked at [link to issue]. Until/unless that lands, this repo is the workaround.
+The cleanest place for a "postgres + wal-g" image would be in the wal-g project itself. Until upstream decides to ship one, this repo is the workaround. If wal-g ever publishes their own combined image, this repo will defer to it.
 
 ## Building locally
 
