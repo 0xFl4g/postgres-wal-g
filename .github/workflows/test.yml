@@ -24,6 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        # Required for cache-to + load: true. The default docker driver
+        # doesn't support GHA cache export.
+        uses: docker/setup-buildx-action@v3
+
       - name: Build local image
         uses: docker/build-push-action@v6
         with:
