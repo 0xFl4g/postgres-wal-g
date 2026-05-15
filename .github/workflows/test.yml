@@ -94,7 +94,13 @@ jobs:
           docker exec pg psql -U postgres -p 5499 -c "SELECT pg_switch_wal();"
 
       - name: Take a base backup
-        run: docker exec pg wal-g backup-push /var/lib/postgresql/data
+        run: |
+          # PG18 moved the default data dir to /var/lib/postgresql/18/docker.
+          # Earlier versions kept /var/lib/postgresql/data. Ask postgres
+          # directly rather than hardcoding.
+          pgdata=$(docker exec pg psql -t -A -c "SHOW data_directory;" | tr -d '[:space:]')
+          echo "data_directory=$pgdata"
+          docker exec pg wal-g backup-push "$pgdata"
 
       - name: Verify backup landed in MinIO
         run: |
