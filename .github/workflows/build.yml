@@ -1,0 +1,115 @@
+name: build
+
+# Build matrix: every supported postgres major × the pinned WAL-G version.
+# Pushes to GHCR on tag (v*) and on main (as :edge). Multi-arch (amd64 + arm64).
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  # Manual trigger for ad-hoc rebuilds when a new WAL-G or postgres release lands
+  # without a corresponding tag here.
+  workflow_dispatch:
+    inputs:
+      wal_g_version:
+        description: 'WAL-G version (e.g. v3.0.5)'
+        required: false
+        default: 'v3.0.5'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  WAL_G_VERSION_DEFAULT: v3.0.5
+
+jobs:
+  build:
+    name: build pg${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['14', '15', '16', '17', '18']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve WAL-G version
+        id: walg
+        env:
+          INPUT_VERSION: ${{ inputs.wal_g_version }}
+        run: |
+          version="${INPUT_VERSION:-$WAL_G_VERSION_DEFAULT}"
+          # Whitelist the version string to a safe character set so it
+          # cannot inject shell metacharacters via workflow_dispatch input.
+          if ! printf '%s' "$version" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Refusing unsafe WAL-G version string: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        env:
+          PG: ${{ matrix.postgres }}
+          WALG: ${{ steps.walg.outputs.version }}
+          REF: ${{ github.ref }}
+        run: |
+          tags="${REGISTRY}/${IMAGE_NAME}:${PG}-${WALG}"
+          # On tag push, also publish a "pg" floating tag pointing at the
+          # latest WAL-G build for that postgres major. On main, publish
+          # "<pg>-edge" for downstream consumers that want to track HEAD.
+          case "$REF" in
+            refs/tags/v*)
+              tags="${tags},${REGISTRY}/${IMAGE_NAME}:${PG}"
+              # Latest postgres major also gets :latest
+              if [ "$PG" = "18" ]; then
+                tags="${tags},${REGISTRY}/${IMAGE_NAME}:latest"
+              fi
+              ;;
+            refs/heads/main)
+              tags="${tags},${REGISTRY}/${IMAGE_NAME}:${PG}-edge"
+              ;;
+          esac
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            POSTGRES_VERSION=${{ matrix.postgres }}
+            WAL_G_VERSION=${{ steps.walg.outputs.version }}
+          cache-from: type=gha,scope=pg${{ matrix.postgres }}
+          cache-to: type=gha,mode=max,scope=pg${{ matrix.postgres }}
+
+      - name: Smoke test (amd64 image)
+        if: github.event_name != 'pull_request'
+        env:
+          PG: ${{ matrix.postgres }}
+          WALG: ${{ steps.walg.outputs.version }}
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}:${PG}-${WALG}"
+          # WAL-G should print its version. Postgres image should print its.
+          docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/wal-g "$image" --version
+          docker run --rm --platform linux/amd64 --entrypoint postgres "$image" --version
