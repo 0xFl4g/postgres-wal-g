@@ -1,0 +1,38 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+  ],
+  // The Dockerfile has POSTGRES_VERSION + WAL_G_VERSION ARGs and a
+  // `FROM postgres:${POSTGRES_VERSION}` line. We don't want Renovate
+  // bumping the FROM tag automatically — the version is templated in
+  // by the build matrix in .github/workflows/build.yml and changing
+  // the default in the Dockerfile would only affect local builds.
+  //
+  // Instead, Renovate watches WAL-G upstream and proposes a PR to bump
+  // WAL_G_VERSION_DEFAULT in the workflow file when a new wal-g release
+  // lands. The build matrix then picks it up for the next tag push.
+  customManagers: [
+    {
+      customType: "regex",
+      fileMatch: ["^\\.github/workflows/build\\.yml$"],
+      matchStrings: [
+        "WAL_G_VERSION_DEFAULT:\\s*(?<currentValue>v[0-9.]+)",
+      ],
+      depNameTemplate: "wal-g/wal-g",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^(?<version>v[0-9.]+)$",
+    },
+  ],
+  packageRules: [
+    // Group GH-Action SHA bumps together — they fire often.
+    {
+      matchManagers: ["github-actions"],
+      groupName: "github-actions",
+      pinDigests: true,
+    },
+  ],
+  prConcurrentLimit: 3,
+}
