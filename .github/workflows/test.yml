@@ -65,6 +65,9 @@ jobs:
             --network host \
             -e POSTGRES_PASSWORD=test \
             -e PGPORT=5499 \
+            -e PGHOST=127.0.0.1 \
+            -e PGUSER=postgres \
+            -e PGPASSWORD=test \
             -e WALG_S3_PREFIX=s3://walg-test \
             -e AWS_ENDPOINT=http://127.0.0.1:9000 \
             -e AWS_REGION=us-east-1 \
