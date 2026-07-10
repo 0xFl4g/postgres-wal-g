@@ -36,11 +36,12 @@
     },
   ],
   packageRules: [
-    // Group GH-Action SHA bumps together — they fire often.
+    // Group GH-Action bumps together — they fire often. Actions are
+    // pinned to major tags (@vN), not digests, matching the org-wide
+    // style; Renovate bumps the major when a new one is released.
     {
       matchManagers: ["github-actions"],
       groupName: "github-actions",
-      pinDigests: true,
     },
   ],
   prConcurrentLimit: 3,
