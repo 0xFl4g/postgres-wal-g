@@ -98,6 +98,11 @@ secrets:
 
 Explicit env values win over `_FILE` — if both `AWS_ACCESS_KEY_ID` and `AWS_ACCESS_KEY_ID_FILE` are set, the explicit value is kept.
 
+Details:
+
+- Trailing newlines are stripped; internal newlines are preserved, so multi-line secrets (armored PGP keys, JSON credentials) survive intact.
+- `POSTGRES_*_FILE` vars are passed through untouched — the official postgres entrypoint resolves those itself (and errors if both `POSTGRES_X` and `POSTGRES_X_FILE` are set).
+
 ## Tested S3 backends
 
 | Backend | Tested | Notes |

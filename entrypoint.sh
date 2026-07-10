@@ -10,19 +10,27 @@
 # This wrapper:
 #   1. For every env var ending in _FILE whose value points at a readable file,
 #      exports a same-named var (without the _FILE suffix) with the file's
-#      contents (trailing newline stripped).
+#      contents (trailing newlines stripped, internal newlines preserved).
 #   2. Hands off to the upstream docker-entrypoint.sh unchanged.
+#
+# POSTGRES_*_FILE vars are left untouched: the upstream entrypoint resolves
+# those itself and hard-errors if both VAR and VAR_FILE are set, so unwrapping
+# them here would break container startup.
 #
 # If no _FILE vars are set, the script is a no-op pass-through.
 # =============================================================================
 
 set -eu
 
-# Iterate over every exported env var ending in _FILE. Compatible with bash 4+;
-# avoids `compgen -e` which requires bash and isn't portable to dash.
-while IFS='=' read -r name value; do
+# Iterate over the environment null-delimited so values containing newlines
+# can't be misparsed as separate vars. bash-only, like the rest of this script.
+while IFS= read -r -d '' entry; do
+    name="${entry%%=*}"
+    value="${entry#*=}"
     case "$name" in
-        *_FILE)
+        # Upstream docker-entrypoint.sh owns the POSTGRES_* namespace.
+        POSTGRES_*) ;;
+        ?*_FILE)
             # Strip the _FILE suffix to get the target var name.
             target="${name%_FILE}"
 
@@ -32,12 +40,13 @@ while IFS='=' read -r name value; do
             fi
 
             if [ -n "$value" ] && [ -r "$value" ]; then
-                # tr strips trailing newlines that text editors love to add.
-                export "$target"="$(tr -d '\n' < "$value")"
+                # $(< file) strips trailing newlines only. Internal newlines
+                # (PEM/PGP keys, JSON creds) must survive intact.
+                export "$target"="$(< "$value")"
             fi
             ;;
     esac
-done < <(env)
+done < <(env -0)
 
 # Hand off to the official postgres entrypoint.
 exec docker-entrypoint.sh "$@"
