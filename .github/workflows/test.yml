@@ -50,6 +50,10 @@ jobs:
             quay.io/minio/minio:latest server /data
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:9000/minio/health/live && break
+            if [ "$i" = 30 ]; then
+              echo "FAIL: MinIO never became healthy" >&2
+              exit 1
+            fi
             sleep 1
           done
 
@@ -82,6 +86,11 @@ jobs:
               -c archive_timeout=10s
           for i in $(seq 1 30); do
             docker exec pg pg_isready -U postgres -p 5499 && break
+            if [ "$i" = 30 ]; then
+              echo "FAIL: postgres never became ready" >&2
+              docker logs pg 2>&1 | tail -50
+              exit 1
+            fi
             sleep 1
           done
 
@@ -118,15 +127,45 @@ jobs:
           mkdir -p /tmp/secrets
           printf '%s' "testaccess" > /tmp/secrets/access
           printf '%s' "testsecret123" > /tmp/secrets/secret
+          # Multi-line secret (e.g. armored PGP key, JSON creds): internal
+          # newlines must survive, trailing newline must be stripped.
+          printf 'line1\nline2\n' > /tmp/secrets/multiline
           docker run --rm \
             --network host \
             -v /tmp/secrets:/run/secrets:ro \
             -e POSTGRES_PASSWORD=test \
             -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access \
             -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret \
+            -e WALG_PGP_KEY_FILE=/run/secrets/multiline \
             --entrypoint /usr/local/bin/postgres-wal-g-entrypoint.sh \
             postgres-wal-g:test \
-            sh -c 'test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && echo "OK: _FILE secrets unwrapped"'
+            bash -c '
+              test "$AWS_ACCESS_KEY_ID" = "testaccess" || { echo "FAIL: AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"; exit 1; }
+              test "$AWS_SECRET_ACCESS_KEY" = "testsecret123" || { echo "FAIL: AWS_SECRET_ACCESS_KEY not unwrapped"; exit 1; }
+              test "$WALG_PGP_KEY" = "$(printf "line1\nline2")" || { echo "FAIL: multi-line secret corrupted"; exit 1; }
+              echo "OK: _FILE secrets unwrapped, multi-line preserved"
+            '
+
+      - name: Verify POSTGRES_PASSWORD_FILE boots postgres
+        # Regression test: the wrapper must NOT unwrap POSTGRES_*_FILE vars.
+        # Upstream docker-entrypoint.sh resolves those itself and hard-errors
+        # if both POSTGRES_PASSWORD and POSTGRES_PASSWORD_FILE are set.
+        run: |
+          printf '%s' "filesecret" > /tmp/secrets/pgpassword
+          docker run -d --name pgfile \
+            -v /tmp/secrets:/run/secrets:ro \
+            -e POSTGRES_PASSWORD_FILE=/run/secrets/pgpassword \
+            postgres-wal-g:test
+          for i in $(seq 1 30); do
+            docker exec pgfile pg_isready -U postgres && break
+            if [ "$i" = 30 ]; then
+              echo "FAIL: postgres with POSTGRES_PASSWORD_FILE never became ready" >&2
+              docker logs pgfile 2>&1 | tail -50
+              exit 1
+            fi
+            sleep 1
+          done
+          docker rm -f pgfile
 
       - name: Dump postgres logs on failure
         if: failure()
