@@ -49,11 +49,17 @@ RUN set -eux; \
     esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends curl ca-certificates; \
-    curl -fsSL "$walg_url" -o /tmp/wal-g.tar.gz; \
-    tar -xzf /tmp/wal-g.tar.gz -C /tmp; \
+    cd /tmp; \
+    curl -fsSLO "$walg_url"; \
+    # Verify against the .sha256 published alongside the release asset.
+    # Same-origin, so this catches corrupt/mixed-up downloads rather than a
+    # compromised release — but it keeps Renovate version bumps hands-free.
+    curl -fsSLO "${walg_url}.sha256"; \
+    sha256sum -c "${walg_inner}.tar.gz.sha256"; \
+    tar -xzf "${walg_inner}.tar.gz"; \
     mv "/tmp/${walg_inner}" /usr/local/bin/wal-g; \
     chmod +x /usr/local/bin/wal-g; \
-    rm /tmp/wal-g.tar.gz; \
+    rm "/tmp/${walg_inner}.tar.gz" "/tmp/${walg_inner}.tar.gz.sha256"; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*; \
     /usr/local/bin/wal-g --version

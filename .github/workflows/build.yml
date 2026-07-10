@@ -14,9 +14,8 @@ on:
   workflow_dispatch:
     inputs:
       wal_g_version:
-        description: 'WAL-G version (e.g. v3.0.5)'
+        description: 'WAL-G version (e.g. v3.0.5). Empty = WAL_G_VERSION_DEFAULT.'
         required: false
-        default: 'v3.0.5'
 
 env:
   REGISTRY: ghcr.io
@@ -24,6 +23,9 @@ env:
   # require the entire repository name to be lowercase. Lowercased in
   # the "Resolve image name" step below.
   WAL_G_VERSION_DEFAULT: v3.0.5
+  # Newest postgres major in the matrix below — gets the :latest tag.
+  # Bump together with the matrix when a new major lands.
+  LATEST_PG: '18'
 
 jobs:
   build:
@@ -93,7 +95,7 @@ jobs:
             refs/tags/v*)
               tags="${tags},${REGISTRY}/${IMAGE}:${PG}"
               # Latest postgres major also gets :latest
-              if [ "$PG" = "18" ]; then
+              if [ "$PG" = "$LATEST_PG" ]; then
                 tags="${tags},${REGISTRY}/${IMAGE}:latest"
               fi
               ;;
