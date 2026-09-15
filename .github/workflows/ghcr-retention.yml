@@ -1,3 +1,4 @@
+name: GHCR retention
 
 on:
   schedule:
