@@ -1,0 +1,31 @@
+name: GHCR retention
+
+on:
+  schedule:
+    # Weekly, Sunday 04:30 UTC — after backup retention runs (Sun 04:00)
+    # so any drill restore that needs an old SHA can still reach it
+    # before the prune.
+    - cron: '30 4 * * 0'
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+env:
+  # Keep the most recent N versions (each version is a single push).
+  MIN_VERSIONS_TO_KEEP: '20'
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old container versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: postgres-wal-g
+          package-type: container
+          min-versions-to-keep: ${{ env.MIN_VERSIONS_TO_KEEP }}
+          # Never prune the tagged release lines consumers pin against
+          # (semver/latest tags); only SHA-tagged build versions age out.
+          ignore-versions: '^(latest|v?[0-9]+.*)$'
+          delete-only-untagged-versions: false
