@@ -1,0 +1,73 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The image bundles shellcheck, so run: blocks are checked too.
+      - run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Reads .github/zizmor.yml; fails the job on any finding.
+      - uses: zizmorcore/zizmor-action@v0
+        with:
+          advanced-security: false
+
+  hadolint:
+    name: hadolint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: shellcheck entrypoint.sh test/entrypoint_tests.sh
+
+  entrypoint-tests:
+    name: entrypoint-tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: ./test/entrypoint_tests.sh

@@ -28,6 +28,9 @@ FROM postgres:${POSTGRES_VERSION}
 ARG WAL_G_VERSION=v3.0.9
 ARG TARGETARCH
 
+# DL3003: the `cd /tmp` is scoped to this RUN. DL3008: pinning Debian package
+# versions breaks on every point release; the weekly rebuild keeps them current.
+# hadolint ignore=DL3003,DL3008
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
       amd64) walg_arch=amd64 ;; \
