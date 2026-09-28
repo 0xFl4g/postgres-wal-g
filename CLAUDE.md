@@ -10,6 +10,10 @@ Drop-in `postgres` image with WAL-G baked in. Docker + bash + GitHub Actions onl
 
 # Full local build (exercises sha256 verification of the wal-g download)
 docker build --build-arg POSTGRES_VERSION=18 -t postgres-wal-g:localtest .
+
+# Lint (same as lint.yml)
+actionlint && shellcheck entrypoint.sh test/entrypoint_tests.sh && hadolint Dockerfile
+uvx zizmor .github/workflows
 ```
 
 CI (`test.yml`) additionally does a full round-trip for pg14–18 against versitygw (MinIO's
@@ -29,6 +33,23 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
 - Path-type vars (`AWS_SHARED_CREDENTIALS_FILE`, `SSL_CERT_FILE`, …) are not unwrapped.
   An unreadable `_FILE` path warns on stderr instead of failing: arbitrary `*_FILE` names
   (e.g. `LOG_FILE`) may legitimately point at files that don't exist yet.
+
+## Supply chain & CI
+
+- `build.yml` = `scan` (read-only token: build amd64, Grype report → SARIF, Grype gate, smoke)
+  → `publish` (push + SBOM + provenance, cosign keyless sign). Never add a third-party action to
+  `publish`; it holds `packages: write` and `id-token: write`. `publish` checks out
+  `needs.scan.outputs.sha` so it ships exactly what was scanned.
+- Gate = fixable HIGH/CRITICAL in **deb** packages only. Go-module findings (wal-g, gosu) are only
+  fixable upstream: reported, not gating. The gate config is written inline to `$RUNNER_TEMP`
+  because scheduled rebuilds check out older tags that don't have repo files added later.
+- Ruleset on `main`: PR + 15 required checks (`scan pg14–18`, `integration (pg14–18)`, `actionlint`,
+  `zizmor`, `hadolint`, `shellcheck`, `entrypoint-tests`); admin bypass. **Renaming a job means
+  updating the ruleset**, or every PR (and Renovate automerge) waits forever. No path filters on
+  `pull_request`. Ruleset on `v*` tags: no update/delete.
+- zizmor's `unpinned-uses` accepts `@vN` via `.github/zizmor.yml`. Renovate: `minimumReleaseAge`
+  3 days, automerge minor/patch, postgres majors arrive as a manual PR (pure-major tags only).
+- PG14 final upstream release 2026-11-12: drop it from both matrices in the next release after.
 
 ## Releases
 
