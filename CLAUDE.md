@@ -12,8 +12,9 @@ Drop-in `postgres` image with WAL-G baked in. Docker + bash + GitHub Actions onl
 docker build --build-arg POSTGRES_VERSION=18 -t postgres-wal-g:localtest .
 
 # Lint (same as lint.yml)
-actionlint && shellcheck entrypoint.sh test/entrypoint_tests.sh && hadolint Dockerfile
+actionlint && shellcheck entrypoint.sh test/*.sh && hadolint Dockerfile
 uvx zizmor .github/workflows
+./test/action_refs.sh   # every uses: ref exists upstream (needs gh auth)
 ```
 
 CI (`test.yml`) additionally does a full round-trip for pg14–18 against versitygw (MinIO's
@@ -47,9 +48,13 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
   `zizmor`, `hadolint`, `shellcheck`, `entrypoint-tests`); admin bypass. **Renaming a job means
   updating the ruleset**, or every PR (and Renovate automerge) waits forever. No path filters on
   `pull_request`. Ruleset on `v*` tags: no update/delete.
-- zizmor's `unpinned-uses` accepts `@vN` via `.github/zizmor.yml`. Renovate: `minimumReleaseAge`
+- zizmor's `unpinned-uses` accepts `@vN` via `.github/zizmor.yml`. Exception: `sigstore/cosign-installer`
+  publishes no floating `v4` tag, so it's pinned to an exact tag (still a tag, never a digest).
+  `test/action_refs.sh` (run in lint.yml) fails if any `uses:` ref doesn't exist upstream. Renovate: `minimumReleaseAge`
   3 days, automerge minor/patch, postgres majors arrive as a manual PR (pure-major tags only).
-- PG14 final upstream release 2026-11-12: drop it from both matrices in the next release after.
+- PG14 final upstream release 2026-11-12: drop it from both matrices in the next release after,
+  **and remove `scan pg14` / `integration (pg14)` from the `main` ruleset's required checks** —
+  a required check that never reports blocks every PR, including Renovate automerges.
 
 ## Releases
 

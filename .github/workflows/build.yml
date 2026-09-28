@@ -25,7 +25,9 @@ on:
 permissions: {}
 
 concurrency:
-  group: build-${{ github.ref }}
+  # event_name keeps the weekly rebuild out of main's queue: a pending run in
+  # a group is cancelled when another queues, which would drop that week.
+  group: build-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -226,10 +228,11 @@ jobs:
           build-args: POSTGRES_VERSION=${{ matrix.postgres }}
           sbom: true
           provenance: mode=max
-          cache-from: type=gha,scope=pg${{ matrix.postgres }}
-          cache-to: type=gha,mode=max,scope=pg${{ matrix.postgres }}
+          # No GHA cache here: scan's third-party scanner could write cache
+          # entries this job would then push and sign. Cold build is minutes.
 
-      - uses: sigstore/cosign-installer@v4
+      # Exact tag: cosign-installer publishes no floating v4 major tag.
+      - uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign image (cosign keyless)
         env:
