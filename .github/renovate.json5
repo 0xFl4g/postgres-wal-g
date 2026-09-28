@@ -2,33 +2,32 @@
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: [
     "config:recommended",
-    ":dependencyDashboard",
     ":semanticCommits",
   ],
   // The Dockerfile has POSTGRES_VERSION + WAL_G_VERSION ARGs and a
   // `FROM postgres:${POSTGRES_VERSION}` line. We don't want Renovate
-  // bumping the FROM tag automatically — the version is templated in
-  // by the build matrix in .github/workflows/build.yml and changing
-  // the default in the Dockerfile would only affect local builds.
+  // bumping the FROM tag automatically — the major is templated in by the
+  // build matrix, and minor/security updates arrive via build.yml's weekly
+  // rebuild.
   //
-  // Instead, Renovate watches WAL-G upstream and proposes a PR bumping
-  // every WAL-G version site in lockstep: WAL_G_VERSION_DEFAULT in
-  // build.yml (what releases ship), the hardcoded version in test.yml
-  // (what CI tests — must not drift from what ships), the Dockerfile
-  // ARG default (local builds), and the README examples.
+  // Instead, Renovate watches WAL-G upstream and bumps every WAL-G version
+  // site in lockstep: the Dockerfile ARG (single source of truth — build.yml
+  // and test.yml build from it) plus the README / Dockerfile-comment examples,
+  // including `18-v3.0.9`-style image tags. Upstream has renamed release
+  // assets before (v3.0.8 dropped `ubuntu-`), so a failing build on a bump
+  // PR usually means the URL in the Dockerfile needs updating.
   customManagers: [
     {
       customType: "regex",
       fileMatch: [
-        "^\\.github/workflows/build\\.yml$",
-        "^\\.github/workflows/test\\.yml$",
         "^Dockerfile$",
         "^README\\.md$",
       ],
       matchStrings: [
-        // Matches `WAL_G_VERSION_DEFAULT: v3.0.5` (build.yml),
-        // `WAL_G_VERSION=v3.0.5` (test.yml, Dockerfile ARG, README).
-        "WAL_G_VERSION(?:_DEFAULT)?[=:]\\s*(?<currentValue>v[0-9.]+)",
+        // `ARG WAL_G_VERSION=v3.0.9`, `--build-arg WAL_G_VERSION=v3.0.9`
+        "WAL_G_VERSION=(?<currentValue>v[0-9.]+)",
+        // image tag examples: `18-v3.0.9`
+        "\\b[0-9]{2}-(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)\\b",
       ],
       depNameTemplate: "wal-g/wal-g",
       datasourceTemplate: "github-releases",
