@@ -16,7 +16,7 @@ set -u
 ENTRYPOINT="${1:-$(cd "$(dirname "$0")/.." && pwd)/entrypoint.sh}"
 IMG="${TEST_IMAGE:-postgres:18}"
 SECRETS=$(mktemp -d)
-trap 'rm -rf "$SECRETS"; docker rm -f walg-t1 >/dev/null 2>&1' EXIT
+trap 'rm -rf "$SECRETS"; docker rm -fv walg-t1 >/dev/null 2>&1' EXIT
 
 printf 'supersecret' > "$SECRETS/pw"
 printf 'line1\nline2\n' > "$SECRETS/multi"
@@ -29,7 +29,7 @@ fail=0
 
 # --- Test 1: POSTGRES_PASSWORD_FILE must boot postgres (upstream file_env
 # errors if both POSTGRES_PASSWORD and POSTGRES_PASSWORD_FILE are set) ---
-docker rm -f walg-t1 >/dev/null 2>&1
+docker rm -fv walg-t1 >/dev/null 2>&1
 docker run -d --name walg-t1 \
   -v "$ENTRYPOINT":/usr/local/bin/wrap.sh:ro \
   -v "$SECRETS":/run/secrets:ro \
@@ -38,7 +38,7 @@ docker run -d --name walg-t1 \
   "$IMG" /usr/local/bin/wrap.sh postgres >/dev/null
 
 ready=""
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   # Only count the final server: the temporary initdb server logs the same line.
   if docker logs walg-t1 2>&1 | sed -n '/init process complete/,$p' | grep -q 'ready to accept connections'; then
     ready=yes; break
@@ -55,7 +55,7 @@ else
   docker logs walg-t1 2>&1 | tail -5
   fail=1
 fi
-docker rm -f walg-t1 >/dev/null 2>&1
+docker rm -fv walg-t1 >/dev/null 2>&1
 
 # --- Test 2: multi-line secret preserved (internal newlines kept, trailing stripped) ---
 got=$(docker run --rm \

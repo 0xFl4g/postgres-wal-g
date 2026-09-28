@@ -12,13 +12,18 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   integration:
     name: integration (pg${{ matrix.postgres }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +32,8 @@ jobs:
       PG: ${{ matrix.postgres }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         # Required for cache-to + load: true. The default docker driver
