@@ -4,13 +4,15 @@
     "config:recommended",
     ":semanticCommits",
   ],
-  // The Dockerfile has POSTGRES_VERSION + WAL_G_VERSION ARGs and a
-  // `FROM postgres:${POSTGRES_VERSION}` line. We don't want Renovate
-  // bumping the FROM tag automatically — the major is templated in by the
-  // build matrix, and minor/security updates arrive via build.yml's weekly
-  // rebuild.
+  // Supply-chain buffer: don't propose a release until it is 3 days old.
+  // Compromised releases are usually caught and yanked within hours.
+  minimumReleaseAge: "3 days",
+  // The dockerfile manager resolves `FROM postgres:${POSTGRES_VERSION}` via
+  // the ARG default (18). It only ever proposes a major bump, which lands in
+  // the same `postgres` PR as LATEST_PG below. Postgres minor and Debian
+  // security updates arrive via build.yml's weekly rebuild instead.
   //
-  // Instead, Renovate watches WAL-G upstream and bumps every WAL-G version
+  // Renovate also watches WAL-G upstream and bumps every WAL-G version
   // site in lockstep: the Dockerfile ARG (single source of truth — build.yml
   // and test.yml build from it) plus the README / Dockerfile-comment examples,
   // including `18-v3.0.9`-style image tags. Upstream has renamed release
@@ -19,9 +21,9 @@
   customManagers: [
     {
       customType: "regex",
-      fileMatch: [
-        "^Dockerfile$",
-        "^README\\.md$",
+      managerFilePatterns: [
+        "/^Dockerfile$/",
+        "/^README\\.md$/",
       ],
       matchStrings: [
         // `ARG WAL_G_VERSION=v3.0.9`, `--build-arg WAL_G_VERSION=v3.0.9`
@@ -33,6 +35,25 @@
       datasourceTemplate: "github-releases",
       extractVersionTemplate: "^(?<version>v[0-9.]+)$",
     },
+    {
+      // New postgres major: bump LATEST_PG once upstream publishes the image.
+      // Pure-major tags only ("19"), so betas and RCs never match.
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/build\\.yml$/"],
+      matchStrings: ["LATEST_PG: '(?<currentValue>[0-9]+)'"],
+      depNameTemplate: "postgres",
+      datasourceTemplate: "docker",
+      versioningTemplate: "regex:^(?<major>\\d+)$",
+    },
+    {
+      // Container images run from workflow `run:` blocks (lint tools, test S3).
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/[^/]+\\.yml$/"],
+      matchStrings: [
+        "(?<depName>rhysd/actionlint|hadolint/hadolint|versity/versitygw):(?<currentValue>v?[0-9]+\\.[0-9]+\\.[0-9]+)",
+      ],
+      datasourceTemplate: "docker",
+    },
   ],
   packageRules: [
     // Group GH-Action bumps together — they fire often. Actions are
@@ -41,6 +62,20 @@
     {
       matchManagers: ["github-actions"],
       groupName: "github-actions",
+    },
+    // Minor/patch bumps merge themselves once every required check passes
+    // (scan gate, integration restore test, lint). Actions pinned @vN only
+    // ever get major bumps, so in practice this is WAL-G and the images above.
+    {
+      matchUpdateTypes: ["minor", "patch"],
+      automerge: true,
+    },
+    {
+      matchDepNames: ["postgres"],
+      automerge: false,
+      prBodyNotes: [
+        "New postgres major: also add it to the matrix in `build.yml` and `test.yml`, then tag a release.",
+      ],
     },
   ],
   prConcurrentLimit: 3,
