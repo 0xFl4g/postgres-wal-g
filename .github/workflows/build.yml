@@ -1,13 +1,16 @@
 name: build
 
 # Build matrix: every supported postgres major × the WAL-G version pinned in
-# the Dockerfile. Multi-arch (amd64 + arm64). Publishes to GHCR:
+# the Dockerfile. Two jobs so third-party scanners never hold push/sign rights:
+#   scan    — build amd64, Grype report + gate, smoke test (read-only token)
+#   publish — multi-arch push with SBOM + provenance, cosign keyless signing
+# Publishes to GHCR:
 #   - v* tag push                → :<pg>-<walg>, :<pg>, :latest (newest pg only)
 #   - weekly schedule / manual   → same release tags, rebuilt from the newest
 #                                  v* tag to pick up upstream postgres minor
 #                                  releases and Debian security fixes
 #   - push to main               → :<pg>-edge only
-#   - pull request               → build only, nothing pushed
+#   - pull request               → scan only (plus an arm64 build check)
 
 on:
   push:
@@ -19,6 +22,12 @@ on:
     - cron: '0 5 * * 1'
   workflow_dispatch:
 
+permissions: {}
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io
   # Newest postgres major in the matrix below — gets the :latest tag.
@@ -26,12 +35,15 @@ env:
   LATEST_PG: '18'
 
 jobs:
-  build:
-    name: build pg${{ matrix.postgres }}
+  scan:
+    name: scan pg${{ matrix.postgres }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      contents: read # checkout
+      security-events: write # upload Grype SARIF to code scanning
+    outputs:
+      sha: ${{ steps.src.outputs.sha }}
+      walg: ${{ steps.walg.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,20 +53,16 @@ jobs:
         with:
           # Rebuilds need the tag list to find the newest release.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check out newest release (scheduled/manual rebuild)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: git checkout "$(git tag -l 'v*' --sort=-v:refname | head -n1)"
 
-      - name: Resolve image name (lowercase)
-        id: image
-        env:
-          OWNER_REPO: ${{ github.repository }}
-        run: |
-          # Docker registries reject mixed-case repository names. Lowercase
-          # the full owner/repo path here so :tag composition is safe later.
-          lower="$(printf '%s' "$OWNER_REPO" | tr '[:upper:]' '[:lower:]')"
-          echo "name=$lower" >> "$GITHUB_OUTPUT"
+      - name: Record source commit
+        id: src
+        # publish checks out exactly this commit, so it ships what was scanned.
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Resolve WAL-G version
         id: walg
@@ -68,11 +76,113 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Set up QEMU (PR arm64 check)
+        if: github.event_name == 'pull_request'
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build amd64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: postgres-wal-g:scan
+          build-args: POSTGRES_VERSION=${{ matrix.postgres }}
+          cache-from: type=gha,scope=pg${{ matrix.postgres }}
+          cache-to: type=gha,mode=max,scope=pg${{ matrix.postgres }}
+
+      - name: Vulnerability report (all findings)
+        id: report
+        uses: anchore/scan-action@v7
+        with:
+          image: postgres-wal-g:scan
+          fail-build: false
+          output-format: sarif
+
+      - name: Upload report to code scanning
+        # Fork PRs get a read-only token that can't write security events.
+        if: github.event.pull_request.head.repo.fork != true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.report.outputs.sarif }}
+          category: grype-pg${{ matrix.postgres }}
+
+      - name: Write gate config
+        run: |
+          # Gate only OS packages: CVEs in bundled Go binaries (wal-g, gosu) are
+          # only fixable upstream and are reported above instead. Written here,
+          # not read from the repo, because scheduled rebuilds check out older
+          # release tags that don't contain it.
+          cat > "$RUNNER_TEMP/grype-gate.yaml" <<'YAML'
+          ignore:
+            - package:
+                type: go-module
+          YAML
+
+      - name: Vulnerability gate (fixable HIGH+ in OS packages)
+        uses: anchore/scan-action@v7
+        with:
+          image: postgres-wal-g:scan
+          config: ${{ runner.temp }}/grype-gate.yaml
+          only-fixed: true
+          severity-cutoff: high
+          fail-build: true
+          output-format: table
+
+      - name: Smoke test
+        run: |
+          # Goes through the /usr/local/bin/wal-g wrapper symlink.
+          docker run --rm --entrypoint wal-g postgres-wal-g:scan --version
+          docker run --rm --entrypoint postgres postgres-wal-g:scan --version
+
+      - name: Build arm64 (PR check, not pushed)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          build-args: POSTGRES_VERSION=${{ matrix.postgres }}
+          cache-from: type=gha,scope=pg${{ matrix.postgres }}
+
+  publish:
+    name: publish pg${{ matrix.postgres }}
+    # Needs the whole scan matrix: one major failing the gate blocks
+    # publishing for all majors in this run.
+    needs: scan
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
+      packages: write # push to GHCR
+      id-token: write # cosign keyless signing (OIDC)
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['14', '15', '16', '17', '18']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.scan.outputs.sha }}
+          persist-credentials: false
+
+      - name: Resolve image name (lowercase)
+        id: image
+        env:
+          OWNER_REPO: ${{ github.repository }}
+        run: |
+          # Docker registries reject mixed-case repository names. Lowercase
+          # the full owner/repo path here so :tag composition is safe later.
+          lower="$(printf '%s' "$OWNER_REPO" | tr '[:upper:]' '[:lower:]')"
+          echo "name=$lower" >> "$GITHUB_OUTPUT"
+
       - name: Compute tags
         id: tags
         env:
           PG: ${{ matrix.postgres }}
-          WALG: ${{ steps.walg.outputs.version }}
+          WALG: ${{ needs.scan.outputs.walg }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           IMAGE: ${{ steps.image.outputs.name }}
@@ -98,25 +208,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      # Smoke-test the amd64 image before anything is pushed.
-      - name: Build amd64 for smoke test
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: postgres-wal-g:smoke
-          build-args: POSTGRES_VERSION=${{ matrix.postgres }}
-          cache-from: type=gha,scope=pg${{ matrix.postgres }}
-
-      - name: Smoke test
-        run: |
-          # Goes through the /usr/local/bin/wal-g wrapper symlink.
-          docker run --rm --entrypoint wal-g postgres-wal-g:smoke --version
-          docker run --rm --entrypoint postgres postgres-wal-g:smoke --version
-
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -124,12 +216,24 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: POSTGRES_VERSION=${{ matrix.postgres }}
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha,scope=pg${{ matrix.postgres }}
           cache-to: type=gha,mode=max,scope=pg${{ matrix.postgres }}
+
+      - uses: sigstore/cosign-installer@v4
+
+      - name: Sign image (cosign keyless)
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        # Signs the digest, so every tag pointing at it is covered.
+        run: cosign sign --yes "${REGISTRY}/${IMAGE}@${DIGEST}"
