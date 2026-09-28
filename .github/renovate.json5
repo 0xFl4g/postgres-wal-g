@@ -50,7 +50,7 @@
       customType: "regex",
       managerFilePatterns: ["/^\\.github/workflows/[^/]+\\.yml$/"],
       matchStrings: [
-        "(?<depName>rhysd/actionlint|hadolint/hadolint|versity/versitygw):(?<currentValue>v?[0-9]+\\.[0-9]+\\.[0-9]+)",
+        "(?<depName>rhysd/actionlint|hadolint/hadolint|versity/versitygw|ghcr\\.io/zizmorcore/zizmor):(?<currentValue>v?[0-9]+\\.[0-9]+\\.[0-9]+)",
       ],
       datasourceTemplate: "docker",
     },
@@ -74,7 +74,7 @@
       matchDepNames: ["postgres"],
       automerge: false,
       prBodyNotes: [
-        "New postgres major: also add it to the matrix in `build.yml` and `test.yml`, then tag a release.",
+        "New postgres major: also add it to the matrix in `build.yml` and `test.yml`, then tag a release. Dropping a major? Remove its `scan pgN` / `integration (pgN)` from the `main` ruleset's required checks, or every PR waits forever.",
       ],
     },
   ],
