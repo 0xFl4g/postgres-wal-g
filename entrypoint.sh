@@ -11,7 +11,11 @@
 #   1. For every env var ending in _FILE whose value points at a readable file,
 #      exports a same-named var (without the _FILE suffix) with the file's
 #      contents (trailing newlines stripped, internal newlines preserved).
-#   2. Hands off to the upstream docker-entrypoint.sh unchanged.
+#      An unreadable path is reported on stderr and skipped.
+#   2. Hands off to the upstream docker-entrypoint.sh unchanged — or, when
+#      invoked as `wal-g` (/usr/local/bin/wal-g is a symlink to this script),
+#      to the real binary. That second path is what makes `docker exec … wal-g`
+#      see the secrets: exec'd processes never pass through the entrypoint.
 #
 # POSTGRES_*_FILE vars are left untouched: the upstream entrypoint resolves
 # those itself and hard-errors if both VAR and VAR_FILE are set, so unwrapping
@@ -30,6 +34,9 @@ while IFS= read -r -d '' entry; do
     case "$name" in
         # Upstream docker-entrypoint.sh owns the POSTGRES_* namespace.
         POSTGRES_*) ;;
+        # Standard path settings whose consumers (AWS SDK, Go TLS, WAL-G) read
+        # the file themselves. Unwrapping would only copy secrets into env.
+        AWS_CONFIG_FILE|AWS_SHARED_CREDENTIALS_FILE|AWS_WEB_IDENTITY_TOKEN_FILE|SSL_CERT_FILE|WALG_S3_CA_CERT_FILE) ;;
         ?*_FILE)
             # Strip the _FILE suffix to get the target var name.
             target="${name%_FILE}"
@@ -43,10 +50,16 @@ while IFS= read -r -d '' entry; do
                 # $(< file) strips trailing newlines only. Internal newlines
                 # (PEM/PGP keys, JSON creds) must survive intact.
                 export "$target"="$(< "$value")"
+            else
+                echo "postgres-wal-g: $name=$value is not readable; $target left unset" >&2
             fi
             ;;
     esac
 done < <(env -0)
+
+if [ "${0##*/}" = wal-g ]; then
+    exec /usr/local/bin/wal-g.bin "$@"
+fi
 
 # Hand off to the official postgres entrypoint.
 exec docker-entrypoint.sh "$@"

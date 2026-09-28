@@ -12,42 +12,32 @@
 # Build:
 #   docker build \
 #     --build-arg POSTGRES_VERSION=18 \
-#     --build-arg WAL_G_VERSION=v3.0.5 \
-#     -t ghcr.io/0xfl4g/postgres-wal-g:18-v3.0.5 .
+#     --build-arg WAL_G_VERSION=v3.0.9 \
+#     -t ghcr.io/0xfl4g/postgres-wal-g:18-v3.0.9 .
 # =============================================================================
 
 ARG POSTGRES_VERSION=18
 
 FROM postgres:${POSTGRES_VERSION}
 
-# WAL-G version. Pin in your compose/.env via the image tag so a rebuild
-# is deterministic. The Ubuntu binaries are glibc-linked and run on the
-# Debian-based postgres image without translation.
-#
-# Architecture notes (verified against the v3.0.5 release manifest):
-#   - amd64  → wal-g publishes ubuntu-20.04 / 22.04 / 24.04 amd64 builds.
-#              We use 22.04 (newer libc fixes than 20.04, still broadly
-#              tested upstream — 24.04 is the newest but only amd64).
-#   - arm64  → wal-g publishes ONLY ubuntu-20.04-aarch64 for arm64. The
-#              older glibc is forward-compatible with Debian Trixie.
-ARG WAL_G_VERSION=v3.0.5
+# WAL-G version. This ARG is the single source of truth: build.yml reads it
+# (and tags images with it), test.yml builds with it. The Ubuntu binaries are
+# glibc-linked and run on the Debian-based postgres image without translation.
+# We use the 22.04 builds (glibc 2.35): the 24.04 ones need a newer glibc than
+# some Debian releases the postgres image may be based on.
+ARG WAL_G_VERSION=v3.0.9
 ARG TARGETARCH
 
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
-      amd64) \
-        walg_url="https://github.com/wal-g/wal-g/releases/download/${WAL_G_VERSION}/wal-g-pg-ubuntu-22.04-amd64.tar.gz"; \
-        walg_inner="wal-g-pg-ubuntu-22.04-amd64"; \
-        ;; \
-      arm64) \
-        walg_url="https://github.com/wal-g/wal-g/releases/download/${WAL_G_VERSION}/wal-g-pg-ubuntu-20.04-aarch64.tar.gz"; \
-        walg_inner="wal-g-pg-ubuntu-20.04-aarch64"; \
-        ;; \
-      *) \
-        echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 \
-        ;; \
+      amd64) walg_arch=amd64 ;; \
+      arm64) walg_arch=aarch64 ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
+    walg_inner="wal-g-pg-22.04-${walg_arch}"; \
+    walg_url="https://github.com/wal-g/wal-g/releases/download/${WAL_G_VERSION}/${walg_inner}.tar.gz"; \
     apt-get update; \
+    # ca-certificates stays installed: wal-g needs it for TLS to object storage.
     apt-get install -y --no-install-recommends curl ca-certificates; \
     cd /tmp; \
     curl -fsSLO "$walg_url"; \
@@ -57,18 +47,22 @@ RUN set -eux; \
     curl -fsSLO "${walg_url}.sha256"; \
     sha256sum -c "${walg_inner}.tar.gz.sha256"; \
     tar -xzf "${walg_inner}.tar.gz"; \
-    mv "/tmp/${walg_inner}" /usr/local/bin/wal-g; \
-    chmod +x /usr/local/bin/wal-g; \
+    # The real binary lives at wal-g.bin; /usr/local/bin/wal-g is the
+    # entrypoint script, which unwraps *_FILE secrets first (see entrypoint.sh).
+    mv "/tmp/${walg_inner}" /usr/local/bin/wal-g.bin; \
+    chmod +x /usr/local/bin/wal-g.bin; \
     rm "/tmp/${walg_inner}.tar.gz" "/tmp/${walg_inner}.tar.gz.sha256"; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*; \
-    /usr/local/bin/wal-g --version
+    /usr/local/bin/wal-g.bin --version
 
 # Entrypoint wrapper. Resolves *_FILE env vars (Docker secrets convention)
 # into the env that WAL-G expects, then chains into the upstream postgres
-# entrypoint. Transparent if no _FILE vars are set.
+# entrypoint. Transparent if no _FILE vars are set. Also installed as `wal-g`
+# so `docker exec … wal-g` gets the same secrets.
 COPY entrypoint.sh /usr/local/bin/postgres-wal-g-entrypoint.sh
-RUN chmod +x /usr/local/bin/postgres-wal-g-entrypoint.sh
+RUN chmod +x /usr/local/bin/postgres-wal-g-entrypoint.sh; \
+    ln -s postgres-wal-g-entrypoint.sh /usr/local/bin/wal-g
 
 ENTRYPOINT ["/usr/local/bin/postgres-wal-g-entrypoint.sh"]
 CMD ["postgres"]
