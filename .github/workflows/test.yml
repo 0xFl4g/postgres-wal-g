@@ -1,7 +1,8 @@
 name: test
 
-# Integration test: build the image locally, bring up postgres + minio,
-# run wal-g backup-push against minio, verify the round-trip works.
+# Integration test: build the image locally, bring up postgres + an S3 server,
+# archive WAL and push a base backup, then restore it into a fresh container
+# and check that WAL written after the backup was replayed.
 # No untrusted input flows into `run:` blocks — matrix.postgres is a
 # hardcoded list and there are no github.event.* fields used.
 
@@ -11,6 +12,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   integration:
     name: integration (pg${{ matrix.postgres }})
@@ -18,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: ['16', '17', '18']
+        postgres: ['14', '15', '16', '17', '18']
     env:
       PG: ${{ matrix.postgres }}
     steps:
@@ -35,115 +39,139 @@ jobs:
           context: .
           load: true
           tags: postgres-wal-g:test
-          build-args: |
-            POSTGRES_VERSION=${{ matrix.postgres }}
-            WAL_G_VERSION=v3.0.5
+          build-args: POSTGRES_VERSION=${{ matrix.postgres }}
           cache-from: type=gha,scope=test-pg${{ matrix.postgres }}
           cache-to: type=gha,mode=max,scope=test-pg${{ matrix.postgres }}
 
-      - name: Start MinIO (S3 backend under test)
+      - name: Start S3 server (versitygw)
         run: |
-          docker run -d --name minio \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=testaccess \
-            -e MINIO_ROOT_PASSWORD=testsecret123 \
-            quay.io/minio/minio:latest server /data
-          for i in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:9000/minio/health/live && break
-            if [ "$i" = 30 ]; then
-              echo "FAIL: MinIO never became healthy" >&2
-              exit 1
-            fi
-            sleep 1
-          done
+          # MinIO's images were withdrawn (repo archived); versitygw's posix
+          # backend is a single container that enforces the access/secret pair,
+          # so a secret that fails to reach wal-g fails the test.
+          docker network create walg
+          docker run -d --name s3 --network walg --tmpfs /data \
+            versity/versitygw:v1.8.0 \
+            --access testaccess --secret testsecret123 posix --nometa /data
+          # posix backend: a bucket is a top-level directory.
+          docker exec s3 mkdir /data/walg-test
 
-      - name: Create bucket
+      - name: Write secrets
         run: |
-          docker run --rm --network host \
-            -e MC_HOST_local=http://testaccess:testsecret123@127.0.0.1:9000 \
-            quay.io/minio/mc:latest mb local/walg-test
+          mkdir -p /tmp/secrets
+          printf '%s' "testaccess" > /tmp/secrets/access
+          printf '%s' "testsecret123" > /tmp/secrets/secret
 
       - name: Start postgres-wal-g
         run: |
-          docker run -d --name pg \
-            --network host \
+          # Credentials only via _FILE, so every `docker exec … wal-g` below
+          # proves the wrapper unwraps them outside the entrypoint too.
+          docker run -d --name pg --network walg \
+            -v /tmp/secrets:/run/secrets:ro \
             -e POSTGRES_PASSWORD=test \
-            -e PGPORT=5499 \
-            -e PGHOST=127.0.0.1 \
-            -e PGUSER=postgres \
-            -e PGPASSWORD=test \
             -e WALG_S3_PREFIX=s3://walg-test \
-            -e AWS_ENDPOINT=http://127.0.0.1:9000 \
+            -e AWS_ENDPOINT=http://s3:7070 \
             -e AWS_REGION=us-east-1 \
             -e AWS_S3_FORCE_PATH_STYLE=true \
-            -e AWS_ACCESS_KEY_ID=testaccess \
-            -e AWS_SECRET_ACCESS_KEY=testsecret123 \
+            -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access \
+            -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret \
             postgres-wal-g:test \
             postgres \
               -c wal_level=replica \
               -c archive_mode=on \
               -c archive_command='/usr/local/bin/wal-g wal-push %p' \
               -c archive_timeout=10s
-          for i in $(seq 1 30); do
-            docker exec pg pg_isready -U postgres -p 5499 && break
-            if [ "$i" = 30 ]; then
+          # pg_isready alone also matches the temporary initdb server.
+          for i in $(seq 1 60); do
+            docker logs pg 2>&1 | grep -q 'init process complete' \
+              && docker exec pg pg_isready -q -U postgres && break
+            if [ "$i" = 60 ]; then
               echo "FAIL: postgres never became ready" >&2
-              docker logs pg 2>&1 | tail -50
               exit 1
             fi
             sleep 1
           done
 
-      - name: Generate WAL activity
+      - name: Base backup
         run: |
-          docker exec pg psql -U postgres -p 5499 -c "
+          docker exec pg psql -U postgres -c "
             CREATE TABLE t (id serial primary key, payload text);
             INSERT INTO t (payload) SELECT 'row-' || generate_series(1, 1000);
           "
-          docker exec pg psql -U postgres -p 5499 -c "SELECT pg_switch_wal();"
-
-      - name: Take a base backup
-        run: |
-          # PG18 moved the default data dir to /var/lib/postgresql/18/docker.
-          # Earlier versions kept /var/lib/postgresql/data. Ask postgres
-          # directly rather than hardcoding.
-          pgdata=$(docker exec pg psql -t -A -c "SHOW data_directory;" | tr -d '[:space:]')
-          echo "data_directory=$pgdata"
-          docker exec pg wal-g backup-push "$pgdata"
-
-      - name: Verify backup landed in MinIO
-        run: |
-          sleep 5
+          # Same form as the README: as the postgres user, into $PGDATA.
+          docker exec -u postgres pg sh -c 'wal-g backup-push "$PGDATA"'
           backups=$(docker exec pg wal-g backup-list | tail -n +2 | wc -l)
           if [ "$backups" -lt 1 ]; then
             echo "FAIL: no backups visible in wal-g backup-list" >&2
-            docker logs pg | tail -50
             exit 1
           fi
-          echo "OK: $backups backup(s) in MinIO"
+          echo "OK: $backups backup(s) in S3"
 
-      - name: Verify _FILE secret unwrapping
+      - name: WAL after the backup is archived
         run: |
-          mkdir -p /tmp/secrets
-          printf '%s' "testaccess" > /tmp/secrets/access
-          printf '%s' "testsecret123" > /tmp/secrets/secret
-          # Multi-line secret (e.g. armored PGP key, JSON creds): internal
-          # newlines must survive, trailing newline must be stripped.
+          # These rows exist only in WAL, so the restore must replay it.
+          docker exec pg psql -U postgres -c \
+            "INSERT INTO t (payload) SELECT 'late-' || generate_series(1, 500);"
+          seg=$(docker exec pg psql -U postgres -Atc "SELECT pg_walfile_name(pg_switch_wal());")
+          for i in $(seq 1 30); do
+            read -r archived failed <<<"$(docker exec pg psql -U postgres -Atc \
+              "SELECT coalesce(last_archived_wal >= '$seg', false), failed_count FROM pg_stat_archiver;" | tr '|' ' ')"
+            if [ "$failed" != 0 ]; then
+              echo "FAIL: archive_command failed $failed time(s)" >&2
+              exit 1
+            fi
+            [ "$archived" = t ] && break
+            if [ "$i" = 30 ]; then
+              echo "FAIL: segment $seg never archived" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "OK: $seg archived, 0 failures"
+
+      - name: Restore into a fresh container
+        run: |
+          # pg18 keeps data under /var/lib/postgresql/18/docker (VOLUME
+          # /var/lib/postgresql); earlier majors use VOLUME /var/lib/postgresql/data.
+          if [ "$PG" -ge 18 ]; then mnt=/var/lib/postgresql; else mnt=/var/lib/postgresql/data; fi
+          s3env=(-e WALG_S3_PREFIX=s3://walg-test -e AWS_ENDPOINT=http://s3:7070 -e AWS_REGION=us-east-1
+                 -e AWS_S3_FORCE_PATH_STYLE=true -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access
+                 -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret)
+          # Same steps as the README restore procedure. Run as postgres: as root,
+          # wal-g would create pg18's parent dir (18/) root-owned, and upstream
+          # only fixes ownership inside $PGDATA.
+          docker run --rm -u postgres --network walg -v restored:"$mnt" -v /tmp/secrets:/run/secrets:ro "${s3env[@]}" \
+            postgres-wal-g:test \
+            sh -c 'wal-g backup-fetch "$PGDATA" LATEST && touch "$PGDATA/recovery.signal"'
+          docker run -d --name pgr --network walg -v restored:"$mnt" -v /tmp/secrets:/run/secrets:ro "${s3env[@]}" \
+            postgres-wal-g:test \
+            postgres -c restore_command='/usr/local/bin/wal-g wal-fetch %f %p'
+          for i in $(seq 1 60); do
+            [ "$(docker exec pgr psql -U postgres -Atc 'SELECT pg_is_in_recovery();' 2>/dev/null)" = f ] && break
+            if [ "$i" = 60 ]; then
+              echo "FAIL: restored postgres never finished recovery" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          rows=$(docker exec pgr psql -U postgres -Atc "SELECT count(*) FROM t;")
+          if [ "$rows" != 1500 ]; then
+            echo "FAIL: restored $rows rows, want 1500 (base backup + replayed WAL)" >&2
+            exit 1
+          fi
+          echo "OK: restored 1500 rows"
+
+      - name: Verify multi-line _FILE secret
+        run: |
+          # Armored PGP key / JSON creds: internal newlines must survive,
+          # the trailing newline must be stripped.
           printf 'line1\nline2\n' > /tmp/secrets/multiline
           docker run --rm \
-            --network host \
             -v /tmp/secrets:/run/secrets:ro \
-            -e POSTGRES_PASSWORD=test \
-            -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access \
-            -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret \
             -e WALG_PGP_KEY_FILE=/run/secrets/multiline \
-            --entrypoint /usr/local/bin/postgres-wal-g-entrypoint.sh \
             postgres-wal-g:test \
             bash -c '
-              test "$AWS_ACCESS_KEY_ID" = "testaccess" || { echo "FAIL: AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"; exit 1; }
-              test "$AWS_SECRET_ACCESS_KEY" = "testsecret123" || { echo "FAIL: AWS_SECRET_ACCESS_KEY not unwrapped"; exit 1; }
               test "$WALG_PGP_KEY" = "$(printf "line1\nline2")" || { echo "FAIL: multi-line secret corrupted"; exit 1; }
-              echo "OK: _FILE secrets unwrapped, multi-line preserved"
+              echo "OK: multi-line preserved"
             '
 
       - name: Verify POSTGRES_PASSWORD_FILE boots postgres
@@ -156,9 +184,10 @@ jobs:
             -v /tmp/secrets:/run/secrets:ro \
             -e POSTGRES_PASSWORD_FILE=/run/secrets/pgpassword \
             postgres-wal-g:test
-          for i in $(seq 1 30); do
-            docker exec pgfile pg_isready -U postgres && break
-            if [ "$i" = 30 ]; then
+          for i in $(seq 1 60); do
+            docker logs pgfile 2>&1 | grep -q 'init process complete' \
+              && docker exec pgfile pg_isready -q -U postgres && break
+            if [ "$i" = 60 ]; then
               echo "FAIL: postgres with POSTGRES_PASSWORD_FILE never became ready" >&2
               docker logs pgfile 2>&1 | tail -50
               exit 1
@@ -167,10 +196,10 @@ jobs:
           done
           docker rm -f pgfile
 
-      - name: Dump postgres logs on failure
+      - name: Dump logs on failure
         if: failure()
         run: |
-          echo "=== postgres logs ==="
-          docker logs pg 2>&1 | tail -100 || true
-          echo "=== minio logs ==="
-          docker logs minio 2>&1 | tail -50 || true
+          for c in pg pgr s3; do
+            echo "=== $c logs ==="
+            docker logs "$c" 2>&1 | tail -100 || true
+          done
