@@ -14,10 +14,12 @@ docker pull ghcr.io/0xfl4g/postgres-wal-g:18
 
 | Tag pattern | Example | Meaning |
 |---|---|---|
-| `<pg>-<walg>` | `18-v3.0.5` | Specific postgres major + WAL-G version. **Use this in production**, pin to digest. |
-| `<pg>` | `18` | Latest WAL-G build for that postgres major. Floating, follows tag pushes. |
-| `latest` | `latest` | Latest postgres major + latest WAL-G. Floating. |
-| `<pg>-edge` | `18-edge` | Built from `main` on every push. Untagged, no SLA. |
+| `<pg>-<walg>` | `18-v3.0.9` | Specific postgres major + WAL-G version. **Use this in production**, pin to digest. |
+| `<pg>` | `18` | Newest release for that postgres major. Floating. |
+| `latest` | `latest` | Newest release, newest postgres major. Floating. |
+| `<pg>-edge` | `18-edge` | Built from `main` on every push. Unreleased, no SLA. |
+
+Release tags are rebuilt weekly from the newest release, so they pick up upstream postgres minor releases and Debian security fixes. The digest behind a tag changes on each rebuild; pin the digest if you need a fixed image.
 
 Supported postgres majors: 14, 15, 16, 17, 18. Multi-arch: `linux/amd64`, `linux/arm64`.
 
@@ -40,7 +42,9 @@ services:
       AWS_SECRET_ACCESS_KEY: ...
       # ...or use the Docker-secrets convention (see "Secrets" below)
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # pg18+: mount /var/lib/postgresql (data lives in 18/docker below it).
+      # pg14–17: mount /var/lib/postgresql/data instead.
+      - postgres_data:/var/lib/postgresql
       - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
 
@@ -55,6 +59,8 @@ wal_level = replica
 archive_mode = on
 archive_command = '/usr/local/bin/wal-g wal-push %p'
 archive_timeout = 60s
+# Only read during recovery (see "Restore" below); harmless otherwise.
+restore_command = '/usr/local/bin/wal-g wal-fetch %f %p'
 ```
 
 `archive_mode` requires a postgres **restart** (not reload) to take effect.
@@ -62,7 +68,7 @@ archive_timeout = 60s
 ## What this image actually adds over `postgres:N`
 
 1. `/usr/local/bin/wal-g` — the postgres-flavoured WAL-G binary at a known path.
-2. An entrypoint wrapper that resolves `*_FILE` env vars into their unsuffixed equivalents (Docker-secrets convention), then chains into the standard `docker-entrypoint.sh`. Without this wrapper, `AWS_ACCESS_KEY_ID_FILE=/run/secrets/foo` would be silently ignored by WAL-G.
+2. An entrypoint wrapper that resolves `*_FILE` env vars into their unsuffixed equivalents (Docker-secrets convention), then chains into the standard `docker-entrypoint.sh`. Without this wrapper, `AWS_ACCESS_KEY_ID_FILE=/run/secrets/foo` would be silently ignored by WAL-G. The same wrapper sits in front of `wal-g` itself (the binary is `wal-g.bin`), so `docker exec … wal-g` sees the secrets too.
 
 That's it. No Patroni, no custom replication scripts, no opinions about backup scheduling. WAL-G is dormant until you configure `archive_command` — until then this image behaves identically to upstream `postgres`.
 
@@ -102,6 +108,9 @@ Details:
 
 - Trailing newlines are stripped; internal newlines are preserved, so multi-line secrets (armored PGP keys, JSON credentials) survive intact.
 - `POSTGRES_*_FILE` vars are passed through untouched — the official postgres entrypoint resolves those itself (and errors if both `POSTGRES_X` and `POSTGRES_X_FILE` are set).
+- Standard path settings whose consumers read the file themselves are also left alone: `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `SSL_CERT_FILE`, `WALG_S3_CA_CERT_FILE`.
+- A `_FILE` path that can't be read is reported on stderr (`docker logs`) and the variable stays unset.
+- Secret files must be readable by whoever runs `wal-g`: root at startup, `postgres` for `docker exec -u postgres`.
 
 ## Tested S3 backends
 
@@ -115,28 +124,39 @@ Details:
 | Google Cloud Storage | not yet | WAL-G supports it natively (`WALG_GS_PREFIX`), should work but untested. |
 | Azure Blob | not yet | Same. |
 
-If you've validated one of the "not yet" rows, open a PR.
+CI exercises the S3 API against [versitygw](https://github.com/versity/versitygw) (backup, WAL archiving, restore with WAL replay); the rows above are not covered by CI. If you've validated one of the "not yet" rows, open a PR.
 
 ## Common operations
 
+Run `wal-g` as the `postgres` user: as root it connects to postgres as role `root`, which doesn't exist.
+
 ```bash
-# Take a base backup (run inside the postgres container)
-docker compose exec postgres wal-g backup-push /var/lib/postgresql/data
+# Take a base backup
+docker compose exec -u postgres postgres sh -c 'wal-g backup-push "$PGDATA"'
 
 # List base backups
-docker compose exec postgres wal-g backup-list
+docker compose exec -u postgres postgres wal-g backup-list
 
 # List archived WAL segments
-docker compose exec postgres wal-g st ls wal_005/
-
-# Restore (into an empty data dir) to LATEST backup + all available WAL
-docker compose run --rm postgres wal-g backup-fetch /var/lib/postgresql/data LATEST
+docker compose exec -u postgres postgres wal-g st ls wal_005/
 
 # Trim old archives
-docker compose exec postgres wal-g delete retain FULL 7 --confirm
+docker compose exec -u postgres postgres wal-g delete retain FULL 7 --confirm
 ```
 
-PITR restore uses `recovery_target_time` in `postgresql.auto.conf` + a `recovery.signal` file in the data dir. See the [WAL-G PITR docs](https://wal-g.readthedocs.io/PostgreSQL/#point-in-time-recovery) for the full procedure.
+### Restore
+
+Restores the LATEST base backup, then replays all archived WAL on startup. **This deletes the current data directory.** Needs `restore_command` in `postgresql.conf` (see above).
+
+```bash
+docker compose stop postgres
+docker compose run --rm -u postgres postgres sh -c '
+  find "$PGDATA" -mindepth 1 -delete 2>/dev/null
+  wal-g backup-fetch "$PGDATA" LATEST && touch "$PGDATA/recovery.signal"'
+docker compose up -d postgres   # replays WAL, then promotes
+```
+
+Run it as `postgres`, not root: on pg18 a root-run fetch creates the parent `18/` directory root-owned, and postgres then can't start. For point-in-time recovery, also set `recovery_target_time` before starting. See the [WAL-G PITR docs](https://wal-g.readthedocs.io/PostgreSQL/#point-in-time-recovery).
 
 ## What this image does NOT include
 
@@ -165,7 +185,7 @@ The cleanest place for a "postgres + wal-g" image would be in the wal-g project 
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --build-arg POSTGRES_VERSION=18 \
-  --build-arg WAL_G_VERSION=v3.0.5 \
+  --build-arg WAL_G_VERSION=v3.0.9 \
   -t postgres-wal-g:local-18 \
   .
 ```
