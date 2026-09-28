@@ -14,9 +14,9 @@ no gate that fails weekly on unfixable upstream Debian CVEs.
 | Topic | Decision |
 |---|---|
 | Scope | This repo only. The 4 other repos' no-op `ignore-versions` is a separate follow-up. |
-| CVE gate | Block publishing on **fixable** HIGH/CRITICAL only; report everything to the Security tab. |
+| CVE gate | Block publishing on **fixable HIGH/CRITICAL in OS (deb) packages** only; report everything (incl. Go binaries) to the Security tab. Go-module findings (wal-g, gosu) are only fixable upstream — verified 2026-09-28: 9 fixable HIGH, all in `/usr/local/bin/wal-g.bin`, 0 in deb. They clear via Renovate wal-g bumps. |
 | `main` protection | PR + all required checks green; no approvals; no force-push/deletion; admin bypass. |
-| Updates | Renovate automerges minor/patch (Actions, WAL-G) after all checks pass; majors manual. |
+| Updates | Renovate automerges minor/patch after all checks pass; majors manual. Actions are pinned `@vN`, so they only ever get major bumps — automerge effectively applies to WAL-G. |
 | Scanner | **Grype** via `anchore/scan-action@v7`. Trivy rejected: GHSA-69fq-xp46-6x23 (2026-03-21, critical, "Trivy ecosystem supply chain temporarily compromised"). |
 | Action pinning | Unchanged: major tags (`@vN`), never digests (user preference). Mitigated by job isolation + `minimumReleaseAge`. |
 
@@ -35,11 +35,16 @@ The third-party scanner must never run in a job that can push or sign.
 
 **Job `scan`** (matrix pg14–18) — `permissions: contents: read, security-events: write`
 1. checkout (`persist-credentials: false`); for schedule/dispatch, check out newest `v*` tag (existing logic).
+   Job outputs `sha` (the checked-out commit) and `walg` (version) so `publish` builds the same source.
 2. Resolve WAL-G version from the Dockerfile (existing).
 3. Build amd64 image, `load: true`, `cache-to: type=gha,mode=max,scope=pg<N>`.
-4. **Grype scan** of the loaded image: `only-fixed: true`, `severity-cutoff: high`, `fail-build: true`, SARIF output.
-5. Upload SARIF to code scanning (`if: always()`, category `pg<N>`) so findings are visible even when the gate fails.
+4. **Report scan** (Grype, `fail-build: false`, all findings, SARIF) + upload to code scanning,
+   category `grype-pg<N>`. Upload is skipped for fork PRs (their token can't write security events).
+5. **Gate scan** (Grype, `only-fixed: true`, `severity-cutoff: high`, `fail-build: true`) with a config
+   ignoring `type: go-module`. The config is written to `$RUNNER_TEMP` by the workflow, not read from
+   the repo, because scheduled rebuilds check out older tags that don't contain it.
 6. Smoke test (existing: `wal-g --version`, `postgres --version`).
+7. PRs only: QEMU arm64 build, `push: false`.
 
 **Job `publish`** (`needs: scan`, same matrix, skipped on `pull_request`) —
 `permissions: contents: read, packages: write, id-token: write`
@@ -50,9 +55,9 @@ The third-party scanner must never run in a job that can push or sign.
 4. Install cosign (`sigstore/cosign-installer@v3`), `cosign sign --yes <image>@<digest>`
    (keyless, same pattern as byte-medusa-backend).
 
-Pull requests: `scan` runs (gate + smoke). `publish` doesn't run on PRs at all, so the
-multi-arch build check moves into `scan` as an extra step: a QEMU arm64 build with
-`push: false`. That keeps arm64 breakage visible on PRs.
+Pull requests: `scan` runs (gate + smoke + arm64 build check); `publish` is skipped.
+`publish` needs the whole `scan` matrix, so one major failing the gate blocks publishing for
+all majors in that run — accepted for simplicity.
 
 Weekly rebuild failing the gate: previous images stay published; GitHub emails the failure.
 
@@ -60,6 +65,9 @@ Weekly rebuild failing the gate: previous images stay published; GitHub emails t
 
 Jobs: `actionlint`, `shellcheck` (entrypoint.sh, test/), `hadolint` (Dockerfile),
 `zizmor` (workflow security audit), `entrypoint-tests` (runs `test/entrypoint_tests.sh`).
+hadolint: DL3003/DL3008 ignored inline on the wal-g RUN (scoped `cd`; pinning Debian package
+versions breaks on every point release). shellcheck: fix the pre-existing SC2034 in
+`test/entrypoint_tests.sh`.
 zizmor config (`.github/zizmor.yml`) sets `unpinned-uses` policy to accept ref pins
 (`@vN`) so it matches the pinning preference; all other findings must be fixed or
 individually justified inline.
@@ -115,7 +123,7 @@ individually justified inline.
 | What | How |
 |---|---|
 | Lint clean | actionlint, zizmor, hadolint, shellcheck run locally, 0 findings |
-| Gate blocks | Grype locally against a deliberately vulnerable build (old WAL-G with a known fixable HIGH) → non-zero; current image → pass |
+| Gate blocks | Grype locally with the gate config: current image → pass; `postgres:14.0` (fixable deb HIGH+) → non-zero; a `v1.0.2` checkout (predates the config) → pass |
 | CI | PR checks all green, including the new gate and lint jobs |
 | Signing / SBOM | After merge: `cosign verify` on published `:<pg>-edge` succeeds; SBOM + provenance visible via imagetools |
 | Settings | Rulesets, auto-merge, private reporting, Dependabot alerts read back via `gh api` |
