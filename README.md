@@ -21,7 +21,23 @@ docker pull ghcr.io/0xfl4g/postgres-wal-g:18
 
 Release tags are rebuilt weekly from the newest release, so they pick up upstream postgres minor releases and Debian security fixes. The digest behind a tag changes on each rebuild; pin the digest if you need a fixed image.
 
-Supported postgres majors: 14, 15, 16, 17, 18. Multi-arch: `linux/amd64`, `linux/arm64`.
+Supported postgres majors: 14, 15, 16, 17, 18. Multi-arch: `linux/amd64`, `linux/arm64`. Majors follow upstream support: 14 is dropped after its final upstream release (2026-11-12); a new major is added once upstream publishes its image.
+
+## Verifying images
+
+Every published image is signed with [cosign](https://github.com/sigstore/cosign) keyless signing from this repo's `build.yml`, and carries an SBOM and build provenance.
+
+```bash
+cosign verify ghcr.io/0xfl4g/postgres-wal-g:18 \
+  --certificate-identity-regexp '^https://github.com/0xFl4g/postgres-wal-g/\.github/workflows/build\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# SBOM (SPDX) and provenance, attached by BuildKit
+docker buildx imagetools inspect ghcr.io/0xfl4g/postgres-wal-g:18 --format '{{ json .SBOM }}'
+docker buildx imagetools inspect ghcr.io/0xfl4g/postgres-wal-g:18 --format '{{ json .Provenance }}'
+```
+
+Images are scanned with Grype before publishing; fixable HIGH/CRITICAL CVEs in OS packages block the release. Findings in the bundled WAL-G binary are only fixable upstream, so they are reported (Security tab) but don't block. See [SECURITY.md](./SECURITY.md).
 
 ## Quickstart
 
