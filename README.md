@@ -25,7 +25,7 @@ Supported postgres majors: 14, 15, 16, 17, 18. Multi-arch: `linux/amd64`, `linux
 
 ## Verifying images
 
-Every published image is signed with [cosign](https://github.com/sigstore/cosign) keyless signing from this repo's `build.yml`, and carries an SBOM and build provenance.
+Images published from 2026-09-28 onward are signed with [cosign](https://github.com/sigstore/cosign) keyless signing from this repo's `build.yml`, and carry an SBOM and build provenance. The older `:<pg>-v3.0.5` tags predate this and are unsigned; use the `-v3.0.9` ones.
 
 ```bash
 cosign verify ghcr.io/0xfl4g/postgres-wal-g:18 \

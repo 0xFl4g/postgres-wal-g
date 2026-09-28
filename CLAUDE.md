@@ -40,10 +40,13 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
 - `build.yml` = `scan` (read-only token: build amd64, Grype report → SARIF, Grype gate, smoke)
   → `publish` (push + SBOM + provenance, cosign keyless sign). Never add a third-party action to
   `publish`; it holds `packages: write` and `id-token: write`. `publish` checks out
-  `needs.scan.outputs.sha` so it ships exactly what was scanned.
+  `needs.scan.outputs.sha` so it ships exactly what was scanned. (`sbom: true` does run Docker's
+  syft scanner image inside `publish`, but sandboxed in BuildKit with no access to runner tokens.)
+  Uses no GHA cache: the scanner job could write entries `publish` would then sign.
 - Gate = fixable HIGH/CRITICAL in **deb** packages only. Go-module findings (wal-g, gosu) are only
-  fixable upstream: reported, not gating. The gate config is written inline to `$RUNNER_TEMP`
-  because scheduled rebuilds check out older tags that don't have repo files added later.
+  fixable upstream: reported, not gating. The gate is a `jq` allowlist (`artifact.type == "deb"`)
+  over Grype's JSON, inline in the workflow — no repo config file, because scheduled rebuilds
+  check out older tags. Release rebuilds upload SARIF as `grype-pgN-release`, main as `grype-pgN`.
 - Ruleset on `main`: PR + 15 required checks (`scan pg14–18`, `integration (pg14–18)`, `actionlint`,
   `zizmor`, `hadolint`, `shellcheck`, `entrypoint-tests`); admin bypass. **Renaming a job means
   updating the ruleset**, or every PR (and Renovate automerge) waits forever. No path filters on

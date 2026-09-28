@@ -856,7 +856,7 @@ gh pr create --base main --head feat/devsecops --title "DevSecOps: Grype gate, c
 gh pr checks --watch --interval 30 >/dev/null 2>&1; gh pr checks | awk -F'\t' '{print $1"\t"$2}'
 ```
 
-Expected: `pass` for `scan pg14`…`scan pg18`, `integration (pg14)`…`(pg18)`, `actionlint`, `zizmor`, `hadolint`, `shellcheck`, `entrypoint-tests`, and the five `Upload report` SARIF results visible under the PR's Security/code-scanning section. `publish pg*` must not appear.
+Expected: `pass` for `scan pg14`…`scan pg18`, `integration (pg14)`…`(pg18)`, `actionlint`, `zizmor`, `hadolint`, `shellcheck`, `entrypoint-tests`, and the five `Upload report` SARIF results visible under the PR's Security/code-scanning section. `publish` shows as one skipped check (`publish pg${{ matrix.postgres }}`) — a job-level `if:` skips the matrix before it expands.
 
 - [ ] **Step 3: User merges** — ask the user to run `! gh pr merge <N> --rebase --delete-branch`. Then:
 

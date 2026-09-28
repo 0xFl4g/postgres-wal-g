@@ -110,29 +110,37 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ steps.report.outputs.sarif }}
-          category: grype-pg${{ matrix.postgres }}
+          # Release rebuilds scan a different image than main; separate
+          # categories stop their alerts from flipping each other open/fixed.
+          category: grype-pg${{ matrix.postgres }}${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '-release' || '' }}
 
-      - name: Write gate config
-        run: |
-          # Gate only OS packages: CVEs in bundled Go binaries (wal-g, gosu) are
-          # only fixable upstream and are reported above instead. Written here,
-          # not read from the repo, because scheduled rebuilds check out older
-          # release tags that don't contain it.
-          cat > "$RUNNER_TEMP/grype-gate.yaml" <<'YAML'
-          ignore:
-            - package:
-                type: go-module
-          YAML
-
-      - name: Vulnerability gate (fixable HIGH+ in OS packages)
+      - name: Vulnerability scan (fixable only, for the gate)
+        id: gatescan
         uses: anchore/scan-action@v7
         with:
           image: postgres-wal-g:scan
-          config: ${{ runner.temp }}/grype-gate.yaml
           only-fixed: true
-          severity-cutoff: high
-          fail-build: true
-          output-format: table
+          fail-build: false
+          output-format: json
+
+      - name: Vulnerability gate (fixable HIGH+ in OS packages)
+        env:
+          REPORT: ${{ steps.gatescan.outputs.json }}
+        run: |
+          # Allowlist: only Debian packages gate, because a rebuild fixes those.
+          # Everything else (Go modules in wal-g/gosu, ...) is only fixable
+          # upstream and is reported to code scanning above instead.
+          jq -r '.matches[]
+            | select(.artifact.type == "deb" and .vulnerability.fix.state == "fixed"
+                     and (.vulnerability.severity == "High" or .vulnerability.severity == "Critical"))
+            | "\(.vulnerability.severity)\t\(.vulnerability.id)\t\(.artifact.name) \(.artifact.version) -> \(.vulnerability.fix.versions | join(","))"' \
+            "$REPORT" | sort -u > gate.txt
+          if [ -s gate.txt ]; then
+            echo "Fixable HIGH/CRITICAL vulnerabilities in OS packages:" >&2
+            cat gate.txt >&2
+            exit 1
+          fi
+          echo "Gate passed: no fixable HIGH/CRITICAL in OS packages."
 
       - name: Smoke test
         run: |
