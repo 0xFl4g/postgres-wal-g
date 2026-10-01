@@ -16,9 +16,9 @@ no gate that fails weekly on unfixable upstream Debian CVEs.
 | Scope | This repo only. The 4 other repos' no-op `ignore-versions` is a separate follow-up. |
 | CVE gate | Block publishing on **fixable HIGH/CRITICAL in OS (deb) packages** only; report everything (incl. Go binaries) to the Security tab. Go-module findings (wal-g, gosu) are only fixable upstream — verified 2026-09-28: 9 fixable HIGH, all in `/usr/local/bin/wal-g.bin`, 0 in deb. They clear via Renovate wal-g bumps. |
 | `main` protection | PR + all required checks green; no approvals; no force-push/deletion; admin bypass. |
-| Updates | Renovate automerges minor/patch after all checks pass; majors manual. Actions are pinned `@vN`, so they only ever get major bumps — automerge effectively applies to WAL-G. |
+| Updates | Superseded 2026-10-02: actions are now SHA-pinned; zizmor.yml exemption removed. Renovate automerges minor/patch after all checks pass; majors manual. Actions are pinned `@vN`, so they only ever get major bumps — automerge effectively applies to WAL-G. |
 | Scanner | **Grype** via `anchore/scan-action@v7`. Trivy rejected: GHSA-69fq-xp46-6x23 (2026-03-21, critical, "Trivy ecosystem supply chain temporarily compromised"). |
-| Action pinning | Unchanged: major tags (`@vN`), never digests (user preference). Mitigated by job isolation + `minimumReleaseAge`. |
+| Action pinning | Superseded 2026-10-02: actions are now SHA-pinned; zizmor.yml exemption removed. (Was: major tags (`@vN`), never digests (user preference). Mitigated by job isolation + `minimumReleaseAge`.) |
 
 ## Current state (verified 2026-09-28)
 
@@ -68,6 +68,8 @@ Jobs: `actionlint`, `shellcheck` (entrypoint.sh, test/), `hadolint` (Dockerfile)
 hadolint: DL3003/DL3008 ignored inline on the wal-g RUN (scoped `cd`; pinning Debian package
 versions breaks on every point release). shellcheck: fix the pre-existing SC2034 in
 `test/entrypoint_tests.sh`.
+> Superseded 2026-10-02: actions are now SHA-pinned; zizmor.yml exemption removed.
+
 zizmor config (`.github/zizmor.yml`) sets `unpinned-uses` policy to accept ref pins
 (`@vN`) so it matches the pinning preference; all other findings must be fixed or
 individually justified inline.

@@ -19,6 +19,7 @@ concurrency:
 # the scan/publish gates live in build.yml, which publish `needs:`.
 jobs:
   secrets:
+    name: secrets
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:

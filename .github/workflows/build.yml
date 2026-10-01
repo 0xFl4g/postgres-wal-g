@@ -161,6 +161,8 @@ jobs:
   restore:
     # The WAL-G round trip (archive, backup, restore + replay) for every major
     # against the exact commit scan built. A broken restore blocks publishing.
+    # Scheduled/dispatch rebuilds run main's test.yml against the newest tag's
+    # code: `uses: ./` resolves at the caller's commit, `ref` only picks the checkout.
     needs: scan
     if: github.event_name != 'pull_request'
     permissions:

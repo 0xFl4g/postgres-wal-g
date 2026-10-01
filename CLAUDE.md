@@ -77,5 +77,5 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
   bumps all of them in lockstep.
 - wal-g renames release assets occasionally (v3.0.8 dropped `ubuntu-`); a red bump PR usually
   means the download URL in the Dockerfile needs updating.
-- GitHub Actions are pinned to **major tags** (`@v7`), not digests, and Renovate must not
-  get `pinDigests: true` — user preference, consistent with other repos (ttyd-base).
+- GitHub Actions are SHA-pinned with `# vX.Y.Z` comments, and Renovate extends
+  `helpers:pinGitHubActionDigests` (superseded the old major-tag preference, 2026-10-02). Don't revert to `@vN`.
