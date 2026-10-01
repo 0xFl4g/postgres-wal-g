@@ -13,7 +13,7 @@ docker build --build-arg POSTGRES_VERSION=18 -t postgres-wal-g:localtest .
 
 # Lint (same as lint.yml)
 actionlint && shellcheck entrypoint.sh test/*.sh && hadolint Dockerfile
-uvx zizmor .github/workflows
+uvx zizmor .
 ./test/action_refs.sh   # every uses: ref exists upstream (needs gh auth)
 ```
 
@@ -38,6 +38,7 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
 ## Supply chain & CI
 
 - `build.yml` = `scan` (read-only token: build amd64, Grype report → SARIF, Grype gate, smoke)
+  → `restore` (calls `test.yml` on the scanned commit; non-PR events only)
   → `publish` (push + SBOM + provenance, cosign keyless sign). Never add a third-party action to
   `publish`; it holds `packages: write` and `id-token: write`. `publish` checks out
   `needs.scan.outputs.sha` so it ships exactly what was scanned. (`sbom: true` does run Docker's
@@ -51,9 +52,9 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
   `zizmor`, `hadolint`, `shellcheck`, `entrypoint-tests`); admin bypass. **Renaming a job means
   updating the ruleset**, or every PR (and Renovate automerge) waits forever. No path filters on
   `pull_request`. Ruleset on `v*` tags: no update/delete.
-- zizmor's `unpinned-uses` accepts `@vN` via `.github/zizmor.yml`. Exception: `sigstore/cosign-installer`
-  publishes no floating `v4` tag, so it's pinned to an exact tag (still a tag, never a digest).
-  `test/action_refs.sh` (run in lint.yml) fails if any `uses:` ref doesn't exist upstream. Renovate: `minimumReleaseAge`
+- Every `uses:` is pinned to a commit SHA with a `# vX.Y.Z` comment (Renovate `helpers:pinGitHubActionDigests`;
+  action bumps don't automerge). The `restore` job's `./` call carries a zizmor ignore because actionlint 1.7.12 rejects `$/`.
+  `test/action_refs.sh` (run in lint.yml) fails if any `uses:` ref doesn't exist upstream. `security.yml` = gitleaks (full history, weekly). Renovate: `minimumReleaseAge`
   3 days, automerge minor/patch, postgres majors arrive as a manual PR (pure-major tags only).
 - PG14 final upstream release 2026-11-12: drop it from both matrices in the next release after,
   **and remove `scan pg14` / `integration (pg14)` from the `main` ruleset's required checks** —

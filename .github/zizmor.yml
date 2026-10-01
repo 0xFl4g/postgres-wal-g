@@ -1,8 +1,0 @@
-rules:
-  unpinned-uses:
-    config:
-      policies:
-        # Actions are pinned to major tags (@vN), not commit digests: owner
-        # preference. Supply-chain risk is contained by job-level permissions
-        # (scanners never hold push/sign rights) and Renovate's minimumReleaseAge.
-        "*": ref-pin

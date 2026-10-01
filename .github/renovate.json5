@@ -3,6 +3,7 @@
   extends: [
     "config:recommended",
     ":semanticCommits",
+    "helpers:pinGitHubActionDigests",
   ],
   // Supply-chain buffer: don't propose a release until it is 3 days old.
   // Compromised releases are usually caught and yanked within hours.
@@ -56,19 +57,22 @@
     },
   ],
   packageRules: [
-    // Group GH-Action bumps together — they fire often. Actions are
-    // pinned to major tags (@vN), not digests, matching the org-wide
-    // style; Renovate bumps the major when a new one is released.
+    // Group GH-Action bumps together — they fire often. Actions are pinned
+    // to commit SHAs with a `# vX.Y.Z` comment; Renovate bumps both.
     {
       matchManagers: ["github-actions"],
       groupName: "github-actions",
     },
     // Minor/patch bumps merge themselves once every required check passes
-    // (scan gate, integration restore test, lint). Actions pinned @vN only
-    // ever get major bumps, so in practice this is WAL-G and the images above.
+    // (scan gate, integration restore test, lint): WAL-G and the images above.
     {
       matchUpdateTypes: ["minor", "patch"],
       automerge: true,
+    },
+    // Actions stay manual: they hold the publish/sign tokens.
+    {
+      matchManagers: ["github-actions"],
+      automerge: false,
     },
     {
       matchDepNames: ["postgres"],

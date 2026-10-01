@@ -8,8 +8,7 @@ fail=0
 while read -r use; do
     repo=$(printf '%s' "${use%@*}" | cut -d/ -f1-2) # drop sub-paths like codeql-action/upload-sarif
     ref=${use#*@}
-    if gh api "repos/$repo/git/ref/tags/$ref" --silent 2>/dev/null ||
-        gh api "repos/$repo/branches/$ref" --silent 2>/dev/null; then
+    if gh api "repos/$repo/commits/$ref" --silent 2>/dev/null; then # SHA, tag or branch
         echo "ok      $use"
     else
         echo "MISSING $use"
