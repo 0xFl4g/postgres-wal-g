@@ -59,7 +59,8 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
   action bumps don't automerge). The `restore` job's `./` call carries a zizmor ignore because actionlint 1.7.12 rejects `$/`.
   `test/action_refs.sh` (run in lint.yml) fails if any `uses:` ref doesn't exist upstream. `security.yml` = gitleaks (full history, weekly). Renovate: `minimumReleaseAge`
   3 days, automerge minor/patch, postgres majors arrive as a manual PR (pure-major tags only).
-- PG14 final upstream release 2026-11-12: drop it from both matrices in the next release after,
+- PG14 final upstream release 2026-11-12: drop it from both matrices (and the major list in
+  `resolve`'s loop in build.yml, the "keep in sync" list; same for adding a new major) in the next release after,
   **and remove `scan pg14` / `integration (pg14)` from the `main` ruleset's required checks** —
   a required check that never reports blocks every PR, including Renovate automerges.
 
