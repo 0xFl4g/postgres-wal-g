@@ -1,9 +1,12 @@
 name: build
 
 # Build matrix: every supported postgres major × the WAL-G version pinned in
-# the Dockerfile. Two jobs so third-party scanners never hold push/sign rights:
+# the Dockerfile. Separate jobs so third-party scanners never hold push/sign rights:
+#   resolve — pin each floating postgres:<major> tag to one digest; scan,
+#             restore and publish all build FROM that digest
 #   scan    — build amd64, Grype report + gate, smoke test (read-only token)
 #   restore — test.yml's backup/restore round trip on the scanned commit
+#             (amd64 only: arm64 images are built and published, not restore-tested)
 #   publish — multi-arch push with SBOM + provenance, cosign keyless signing
 # Publishes to GHCR:
 #   - v* tag push                → :<pg>-<walg>, :<pg>, :latest (newest pg only)
@@ -38,8 +41,36 @@ env:
   LATEST_PG: '18'
 
 jobs:
+  resolve:
+    # Resolve each floating base tag once, so scan, restore and publish build
+    # the same base bytes even if upstream re-tags mid-run. The digest is the
+    # multi-arch index, so amd64 and arm64 both resolve from it.
+    name: resolve base images
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      # JSON map {"14": "postgres:14@sha256:...", ...}; consumers index it by
+      # matrix.postgres (a matrix job can't expose per-leg outputs directly).
+      bases: ${{ steps.resolve.outputs.bases }}
+    steps:
+      - name: Resolve postgres base digests
+        id: resolve
+        run: |
+          # Keep this list in sync with the matrices below.
+          bases='{}'
+          for pg in 14 15 16 17 18; do
+            digest="$(docker buildx imagetools inspect "postgres:${pg}" --format '{{.Manifest.Digest}}')"
+            if ! printf '%s' "$digest" | grep -qE '^sha256:[0-9a-f]{64}$'; then
+              echo "Bad digest for postgres:${pg}: '$digest'" >&2
+              exit 1
+            fi
+            bases="$(jq -c --arg pg "$pg" --arg ref "postgres:${pg}@${digest}" '.[$pg] = $ref' <<<"$bases")"
+          done
+          echo "bases=$bases" >> "$GITHUB_OUTPUT"
+
   scan:
     name: scan pg${{ matrix.postgres }}
+    needs: resolve
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout
@@ -93,7 +124,9 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: postgres-wal-g:scan
-          build-args: POSTGRES_VERSION=${{ matrix.postgres }}
+          build-args: |
+            POSTGRES_VERSION=${{ matrix.postgres }}
+            BASE_IMAGE=${{ fromJSON(needs.resolve.outputs.bases)[matrix.postgres] }}
           cache-from: type=gha,scope=pg${{ matrix.postgres }}
           cache-to: type=gha,mode=max,scope=pg${{ matrix.postgres }}
 
@@ -155,7 +188,9 @@ jobs:
         with:
           context: .
           platforms: linux/arm64
-          build-args: POSTGRES_VERSION=${{ matrix.postgres }}
+          build-args: |
+            POSTGRES_VERSION=${{ matrix.postgres }}
+            BASE_IMAGE=${{ fromJSON(needs.resolve.outputs.bases)[matrix.postgres] }}
           cache-from: type=gha,scope=pg${{ matrix.postgres }}
 
   restore:
@@ -163,19 +198,20 @@ jobs:
     # against the exact commit scan built. A broken restore blocks publishing.
     # Scheduled/dispatch rebuilds run main's test.yml against the newest tag's
     # code: `uses: ./` resolves at the caller's commit, `ref` only picks the checkout.
-    needs: scan
+    needs: [resolve, scan]
     if: github.event_name != 'pull_request'
     permissions:
       contents: read # checkout
     uses: ./.github/workflows/test.yml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
     with:
       ref: ${{ needs.scan.outputs.sha }}
+      base_images: ${{ needs.resolve.outputs.bases }}
 
   publish:
     name: publish pg${{ matrix.postgres }}
     # Needs the whole scan and restore matrices: one major failing a gate
     # blocks publishing for all majors in this run.
-    needs: [scan, restore]
+    needs: [resolve, scan, restore]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -247,7 +283,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          build-args: POSTGRES_VERSION=${{ matrix.postgres }}
+          build-args: |
+            POSTGRES_VERSION=${{ matrix.postgres }}
+            BASE_IMAGE=${{ fromJSON(needs.resolve.outputs.bases)[matrix.postgres] }}
           sbom: true
           provenance: mode=max
           # No GHA cache here: scan's third-party scanner could write cache

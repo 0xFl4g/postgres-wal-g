@@ -17,8 +17,11 @@
 # =============================================================================
 
 ARG POSTGRES_VERSION=18
+# CI pins this to postgres:<major>@sha256:... so the scanned, tested and
+# published images share one base; local builds follow the floating tag.
+ARG BASE_IMAGE=postgres:${POSTGRES_VERSION}
 
-FROM postgres:${POSTGRES_VERSION}
+FROM ${BASE_IMAGE}
 
 # WAL-G version. This ARG is the single source of truth: build.yml reads it
 # (and tags images with it), test.yml builds with it. The Ubuntu binaries are
