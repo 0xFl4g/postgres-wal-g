@@ -30,7 +30,9 @@ ARG TARGETARCH
 
 # DL3003: the `cd /tmp` is scoped to this RUN. DL3008: pinning Debian package
 # versions breaks on every point release; the weekly rebuild keeps them current.
-# hadolint ignore=DL3003,DL3008
+# DL3005: apply Debian security updates; the grype gate requires fixable OS CVEs
+# to be fixed at build time (the upstream postgres base image lags Debian).
+# hadolint ignore=DL3003,DL3005,DL3008
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
       amd64) walg_arch=amd64 ;; \
@@ -40,6 +42,7 @@ RUN set -eux; \
     walg_inner="wal-g-pg-22.04-${walg_arch}"; \
     walg_url="https://github.com/wal-g/wal-g/releases/download/${WAL_G_VERSION}/${walg_inner}.tar.gz"; \
     apt-get update; \
+    apt-get -y upgrade --no-install-recommends; \
     # ca-certificates stays installed: wal-g needs it for TLS to object storage.
     apt-get install -y --no-install-recommends curl ca-certificates; \
     cd /tmp; \
