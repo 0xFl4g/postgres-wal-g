@@ -21,7 +21,7 @@ docker pull ghcr.io/0xfl4g/postgres-wal-g:18
 
 Release tags are rebuilt weekly from the newest release, so they pick up upstream postgres minor releases and Debian security fixes. The digest behind a tag changes on each rebuild; pin the digest if you need a fixed image.
 
-Supported postgres majors: 14, 15, 16, 17, 18. Multi-arch: `linux/amd64`, `linux/arm64`. Majors follow upstream support: 14 is dropped after its final upstream release (2026-11-12); a new major is added once upstream publishes its image.
+Supported postgres majors: 14, 15, 16, 17, 18. Multi-arch: `linux/amd64`, `linux/arm64` (CI restore-tests amd64 only; arm64 is built and published but not restore-tested). Majors follow upstream support: 14 is dropped after its final upstream release (2026-11-12); a new major is added once upstream publishes its image.
 
 ## Verifying images
 

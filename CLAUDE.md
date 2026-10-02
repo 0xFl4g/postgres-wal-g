@@ -37,13 +37,16 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
 
 ## Supply chain & CI
 
-- `build.yml` = `scan` (read-only token: build amd64, Grype report → SARIF, Grype gate, smoke)
+- `build.yml` = `resolve` (pins each `postgres:<major>` tag to an index digest, exposed as one JSON-map
+  output `bases`; scan, restore and publish all build with `BASE_IMAGE=postgres:N@sha256:...`, so the
+  tested image and the signed image share one base) → `scan` (read-only token: build amd64, Grype report → SARIF, Grype gate, smoke)
   → `restore` (calls `test.yml` on the scanned commit; non-PR events only)
   → `publish` (push + SBOM + provenance, cosign keyless sign). Never add a third-party action to
   `publish`; it holds `packages: write` and `id-token: write`. `publish` checks out
   `needs.scan.outputs.sha` so it ships exactly what was scanned. (`sbom: true` does run Docker's
   syft scanner image inside `publish`, but sandboxed in BuildKit with no access to runner tokens.)
   Uses no GHA cache: the scanner job could write entries `publish` would then sign.
+  Known limitation: arm64 images are built and published but not restore-tested (restore is amd64 only).
 - Gate = fixable HIGH/CRITICAL in **deb** packages only. Go-module findings (wal-g, gosu) are only
   fixable upstream: reported, not gating. The gate is a `jq` allowlist (`artifact.type == "deb"`)
   over Grype's JSON, inline in the workflow — no repo config file, because scheduled rebuilds
@@ -56,7 +59,8 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
   action bumps don't automerge). The `restore` job's `./` call carries a zizmor ignore because actionlint 1.7.12 rejects `$/`.
   `test/action_refs.sh` (run in lint.yml) fails if any `uses:` ref doesn't exist upstream. `security.yml` = gitleaks (full history, weekly). Renovate: `minimumReleaseAge`
   3 days, automerge minor/patch, postgres majors arrive as a manual PR (pure-major tags only).
-- PG14 final upstream release 2026-11-12: drop it from both matrices in the next release after,
+- PG14 final upstream release 2026-11-12: drop it from both matrices (and the major list in
+  `resolve`'s loop in build.yml, the "keep in sync" list; same for adding a new major) in the next release after,
   **and remove `scan pg14` / `integration (pg14)` from the `main` ruleset's required checks** —
   a required check that never reports blocks every PR, including Renovate automerges.
 

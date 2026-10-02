@@ -18,6 +18,10 @@ on:
         description: Commit to test (the one build.yml scanned)
         type: string
         required: true
+      base_images:
+        description: JSON map of postgres major to pinned base image (build.yml's resolve job)
+        type: string
+        required: true
 
 permissions: {}
 
@@ -54,7 +58,9 @@ jobs:
           context: .
           load: true
           tags: postgres-wal-g:test
-          build-args: POSTGRES_VERSION=${{ matrix.postgres }}
+          build-args: |
+            POSTGRES_VERSION=${{ matrix.postgres }}
+            ${{ inputs.base_images && format('BASE_IMAGE={0}', fromJSON(inputs.base_images)[matrix.postgres]) || '' }}
           cache-from: type=gha,scope=test-pg${{ matrix.postgres }}
           cache-to: type=gha,mode=max,scope=test-pg${{ matrix.postgres }}
 

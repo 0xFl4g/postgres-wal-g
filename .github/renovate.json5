@@ -8,10 +8,12 @@
   // Supply-chain buffer: don't propose a release until it is 3 days old.
   // Compromised releases are usually caught and yanked within hours.
   minimumReleaseAge: "3 days",
-  // The dockerfile manager resolves `FROM postgres:${POSTGRES_VERSION}` via
-  // the ARG default (18). It only ever proposes a major bump, which lands in
-  // the same `postgres` PR as LATEST_PG below. Postgres minor and Debian
-  // security updates arrive via build.yml's weekly rebuild instead.
+  // The Dockerfile is `FROM ${BASE_IMAGE}`, defaulting to
+  // `postgres:${POSTGRES_VERSION}` (18). CI always overrides BASE_IMAGE with the
+  // digest build.yml's `resolve` job pinned, so Renovate may not track the
+  // Dockerfile base at all; LATEST_PG below is what signals a new major.
+  // Postgres minor and Debian security updates arrive via build.yml's weekly
+  // rebuild instead.
   //
   // Renovate also watches WAL-G upstream and bumps every WAL-G version
   // site in lockstep: the Dockerfile ARG (single source of truth — build.yml
@@ -78,7 +80,7 @@
       matchDepNames: ["postgres"],
       automerge: false,
       prBodyNotes: [
-        "New postgres major: also add it to the matrix in `build.yml` and `test.yml`, then tag a release. Dropping a major? Remove its `scan pgN` / `integration (pgN)` from the `main` ruleset's required checks, or every PR waits forever.",
+        "New postgres major: also add it to the matrix in `build.yml` and `test.yml` and to the `for pg in` loop in build.yml's `resolve` job, then tag a release. Dropping a major? Remove its `scan pgN` / `integration (pgN)` from the `main` ruleset's required checks, or every PR waits forever.",
       ],
     },
   ],
