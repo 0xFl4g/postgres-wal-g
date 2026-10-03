@@ -48,7 +48,8 @@ services:
     image: ghcr.io/0xfl4g/postgres-wal-g:18
     environment:
       POSTGRES_PASSWORD: secret
-      # WAL-G — point at any S3-compatible bucket. Empty value disables.
+      # WAL-G — point at any S3-compatible bucket. Leaving this empty does NOT
+      # disable archiving: with archive_command set, every wal-push fails (see below).
       WALG_S3_PREFIX: s3://my-bucket/wal-g
       AWS_ENDPOINT: https://s3.example.com
       AWS_REGION: auto
@@ -80,6 +81,8 @@ restore_command = '/usr/local/bin/wal-g wal-fetch %f %p'
 ```
 
 `archive_mode` requires a postgres **restart** (not reload) to take effect.
+
+The image itself never enables archiving; `archive_mode`/`archive_command` come only from your `postgresql.conf`. If they are on and `WALG_S3_PREFIX` is empty or unset, `wal-g wal-push` exits non-zero ("Failed to find any configured storage") for every segment, so postgres retries forever and unarchived WAL piles up in `pg_wal` until the disk fills. To disable archiving, set `archive_mode = off` (restart required) or drop the archive settings; clearing the prefix does not do it.
 
 ## What this image actually adds over `postgres:N`
 
@@ -125,7 +128,7 @@ Details:
 - Trailing newlines are stripped; internal newlines are preserved, so multi-line secrets (armored PGP keys, JSON credentials) survive intact.
 - `POSTGRES_*_FILE` vars are passed through untouched — the official postgres entrypoint resolves those itself (and errors if both `POSTGRES_X` and `POSTGRES_X_FILE` are set).
 - Standard path settings whose consumers read the file themselves are also left alone: `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `SSL_CERT_FILE`, `WALG_S3_CA_CERT_FILE`.
-- A `_FILE` path that can't be read is reported on stderr (`docker logs`) and the variable stays unset.
+- An unreadable `_FILE` path is reported on stderr (`docker logs`). For credential vars (`AWS_*`, `WALG_*`, `WALE_*`, `GS_*`, `AZURE_*`, `SWIFT_*`, `OS_*`) it is fatal: the container exits 1 before postgres starts, and `wal-g` wrapper calls fail the same way. Other `*_FILE` names (e.g. `LOG_FILE`) only warn and stay unset.
 - Secret files must be readable by whoever runs `wal-g`: root at startup, `postgres` for `docker exec -u postgres`.
 
 ## Tested S3 backends

@@ -104,13 +104,14 @@ else
   fail=1
 fi
 
-# --- Test 5: unreadable _FILE path warns on stderr but does not block startup ---
+# --- Test 5: unreadable _FILE path on a non-credential var warns on stderr but
+# does not block startup (e.g. LOG_FILE may point at a file that doesn't exist yet) ---
 got=$(docker run --rm \
-  -e WALG_MISSING_FILE=/run/secrets/nope \
+  -e LOG_FILE=/run/secrets/nope \
   -v "$ENTRYPOINT":/usr/local/bin/wrap.sh:ro \
   --entrypoint bash \
   "$IMG" /usr/local/bin/wrap.sh echo started 2>&1)
-if printf '%s' "$got" | grep -q 'WALG_MISSING_FILE' && printf '%s' "$got" | grep -q '^started$'; then
+if printf '%s' "$got" | grep -q 'LOG_FILE' && printf '%s' "$got" | grep -q '^started$'; then
   echo "PASS: test 5 (missing _FILE warns, still starts)"
 else
   echo "FAIL: test 5 — got: $got"
@@ -133,6 +134,35 @@ if [ "$got" = "0" ]; then
   echo "PASS: test 6 (path-type _FILE vars untouched)"
 else
   echo "FAIL: test 6 — $got path-type var(s) unwrapped"
+  fail=1
+fi
+
+# --- Test 7: unreadable _FILE on a credential var (AWS_/WALG_/...) fails closed:
+# non-zero exit, error names the variable, nothing started — via the entrypoint
+# and via the wal-g wrapper ---
+out=$(docker run --rm \
+  -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/nope \
+  -v "$ENTRYPOINT":/usr/local/bin/wrap.sh:ro \
+  --entrypoint bash \
+  "$IMG" /usr/local/bin/wrap.sh echo started 2>&1)
+rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'AWS_SECRET_ACCESS_KEY_FILE' && ! printf '%s' "$out" | grep -q '^started$'; then
+  echo "PASS: test 7a (missing credential _FILE fails closed)"
+else
+  echo "FAIL: test 7a — rc=$rc out: $out"
+  fail=1
+fi
+out=$(docker run --rm \
+  -e WALG_LIBSODIUM_KEY_FILE=/run/secrets/nope \
+  -v "$ENTRYPOINT":/usr/local/bin/wal-g:ro \
+  -v "$SECRETS/fake-wal-g":/usr/local/bin/wal-g.bin:ro \
+  --entrypoint bash \
+  "$IMG" /usr/local/bin/wal-g backup-list 2>&1)
+rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'WALG_LIBSODIUM_KEY_FILE' && ! printf '%s' "$out" | grep -q 'backup-list'; then
+  echo "PASS: test 7b (wal-g wrapper fails closed too)"
+else
+  echo "FAIL: test 7b — rc=$rc out: $out"
   fail=1
 fi
 
