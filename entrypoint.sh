@@ -11,7 +11,10 @@
 #   1. For every env var ending in _FILE whose value points at a readable file,
 #      exports a same-named var (without the _FILE suffix) with the file's
 #      contents (trailing newlines stripped, internal newlines preserved).
-#      An unreadable path is reported on stderr and skipped.
+#      An unreadable path is reported on stderr; for credential vars (AWS_*,
+#      WALG_*, WALE_*, GS_*, AZURE_*, SWIFT_*, OS_*) it is fatal (exit 1) so
+#      the container never starts with a silently missing secret. Other names
+#      (e.g. LOG_FILE) only warn and are skipped.
 #   2. Hands off to the upstream docker-entrypoint.sh unchanged — or, when
 #      invoked as `wal-g` (/usr/local/bin/wal-g is a symlink to this script),
 #      to the real binary. That second path is what makes `docker exec … wal-g`
@@ -52,6 +55,10 @@ while IFS= read -r -d '' entry; do
                 export "$target"="$(< "$value")"
             else
                 echo "postgres-wal-g: $name=$value is not readable; $target left unset" >&2
+                # Credential vars fail closed; arbitrary *_FILE (e.g. LOG_FILE) only warn.
+                case "$name" in
+                    AWS_*|WALG_*|WALE_*|GS_*|AZURE_*|SWIFT_*|OS_*) exit 1 ;;
+                esac
             fi
             ;;
     esac

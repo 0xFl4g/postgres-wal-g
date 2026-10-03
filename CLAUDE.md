@@ -32,7 +32,8 @@ with WAL replay. Credentials are passed only via `_FILE`, so it also covers the 
 - `/usr/local/bin/wal-g` is a symlink to the entrypoint script (real binary: `wal-g.bin`), so
   `docker exec … wal-g` gets unwrapped secrets — exec'd processes skip the entrypoint.
 - Path-type vars (`AWS_SHARED_CREDENTIALS_FILE`, `SSL_CERT_FILE`, …) are not unwrapped.
-  An unreadable `_FILE` path warns on stderr instead of failing: arbitrary `*_FILE` names
+  An unreadable `_FILE` path on a credential prefix (`AWS_`, `WALG_`, `WALE_`, `GS_`, `AZURE_`, `SWIFT_`, `OS_`)
+  exits 1 (fail closed); other names only warn: arbitrary `*_FILE` names
   (e.g. `LOG_FILE`) may legitimately point at files that don't exist yet.
 
 ## Supply chain & CI
