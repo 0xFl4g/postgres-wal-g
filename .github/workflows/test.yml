@@ -71,7 +71,7 @@ jobs:
           # so a secret that fails to reach wal-g fails the test.
           docker network create walg
           docker run -d --name s3 --network walg --tmpfs /data \
-            versity/versitygw:v1.8.0 \
+            versity/versitygw:v1.9.0 \
             --access testaccess --secret testsecret123 posix --nometa /data
           # posix backend: a bucket is a top-level directory.
           docker exec s3 mkdir /data/walg-test
